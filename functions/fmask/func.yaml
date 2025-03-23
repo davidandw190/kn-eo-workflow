@@ -1,9 +1,10 @@
 specVersion: 0.36.0
 name: fmask
 runtime: python
-created: 2025-03-17T17:54:58.183702719+02:00
 registry: docker.io/davidandw190
 image: docker.io/davidandw190/fmask:latest
+namespace: eo-workflow
+created: 2025-03-17T17:54:58.183702719+02:00
 build:
   builder: pack
   buildEnvs:
@@ -11,6 +12,7 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
+  image: docker.io/davidandw190/fmask@sha256:dd688dcfb640648dbed806c005cfe21829d1ae1e6c59595a0c87d3d6db595493
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"
   #   serving.knative.dev/serviceAccountName: minio-vault-auth

@@ -61,23 +61,20 @@ def submit_request(minio_client, bucket_name, request_data):
     
     return request_id, object_name
 
-def main(request: Request):
+def main(context: Context):
     try:
         logger.info("EO Webhook activated")
         
         config = get_config()
         
-        if request.method != 'POST':
-            return jsonify({
-                "error": "Only POST method is allowed"
-            }), 405
+        if not hasattr(context, 'request'):
+            return {"error": "No request in context"}, 400
         
+        # Extract the request body from the context
         try:
-            body = request.get_json()
+            body = context.request.json if hasattr(context.request, 'json') else {}
         except Exception as e:
-            return jsonify({
-                "error": f"Invalid JSON: {str(e)}"
-            }), 400
+            return {"error": f"Invalid JSON: {str(e)}"}, 400
         
         bbox = body.get('bbox')
         time_range = body.get('time_range')

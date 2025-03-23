@@ -81,8 +81,8 @@ class MinioClientManager:
 
     def get_credentials(self):
         try:
-            access_key = os.getenv("MINIO_ROOT_USER")
-            secret_key = os.getenv("MINIO_ROOT_PASSWORD")
+            access_key = os.getenv("MINIO_ROOT_USER", "minioadmin")
+            secret_key = os.getenv("MINIO_ROOT_PASSWORD", "minioadmin")
             
             logger.info("Checking for Vault-injected MinIO credentials")
             logger.info(f"MinIO credentials present: access_key={'YES' if access_key else 'NO'}, secret_key={'YES' if secret_key else 'NO'}")

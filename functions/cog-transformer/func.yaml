@@ -1,9 +1,10 @@
 specVersion: 0.36.0
 name: cog-transformer
 runtime: python
-created: 2025-03-17T12:04:42.970534761+02:00
 registry: docker.io/davidandw190
 image: docker.io/davidandw190/cog-transformer:latest
+namespace: eo-workflow
+created: 2025-03-17T12:04:42.970534761+02:00
 build:
   builder: pack
   buildEnvs:
@@ -11,6 +12,7 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
+  image: docker.io/davidandw190/cog-transformer@sha256:f12a3d092466215c019ea31fe6526ebb636b82530c20e6d22b5c1f0c9128d445
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"
   #   serving.knative.dev/serviceAccountName: minio-vault-auth
