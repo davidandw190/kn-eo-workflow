@@ -70,7 +70,6 @@ def main(context: Context):
         if not hasattr(context, 'request'):
             return {"error": "No request in context"}, 400
         
-        # Extract the request body from the context
         try:
             body = context.request.json if hasattr(context.request, 'json') else {}
         except Exception as e:

@@ -11,9 +11,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     rm -rf /root/.cache/pip
 COPY app.py .
-RUN chown -R appuser:appuser /app && \
-    chmod +x app.py
+RUN sed -i 's/\r$//' app.py && \
+    chmod +x app.py && \
+    sed -i '1s|^#!.*|#!/usr/bin/env python3|' app.py
+
+RUN chown -R appuser:appuser /app
 USER appuser
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import sys, requests; sys.exit(0 if requests.get('http://localhost:8080/health', timeout=2).status_code == 200 else 1)" || exit 1
-CMD ["./app.py"]
+CMD ["python", "app.py"]

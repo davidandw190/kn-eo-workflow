@@ -3,7 +3,6 @@ name: webhook
 runtime: python
 registry: docker.io/davidandw190
 image: docker.io/davidandw190/eo-webhook:latest
-namespace: eo-workflow
 created: 2025-03-17T00:56:15.655238904+02:00
 build:
   builder: pack

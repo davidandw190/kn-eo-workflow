@@ -1,0 +1,13 @@
+apiVersion: sources.knative.dev/v1
+kind: PingSource
+metadata:
+  name: test-ping-source
+  namespace: eo-workflow
+spec:
+  schedule: "*/2 * * * *"
+  data: '{"msg": "Hello, Knative!"}'
+  sink:
+    ref:
+      apiVersion: eventing.knative.dev/v1
+      kind: Broker
+      name: eo-event-broker

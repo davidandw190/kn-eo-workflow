@@ -3,13 +3,9 @@ kind: Broker
 metadata:
   name: eo-event-broker
   namespace: eo-workflow
+  annotations:
+    eventing.knative.dev/broker.class: MTBroker
   labels:
     app.kubernetes.io/name: eo-event-broker
     app.kubernetes.io/part-of: eo-processing-system
-  # annotations:  eventing.knative.dev/broker.class: MTChannelBasedBroker
-spec:
-  config:
-    apiVersion: v1
-    kind: ConfigMap
-    name: config-br-default-channel
-    namespace: knative-eventing
+spec: {}

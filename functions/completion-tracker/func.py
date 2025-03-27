@@ -140,9 +140,9 @@ class RedisTracker:
                     socket_timeout=self.connection_timeout,
                     socket_connect_timeout=self.connection_timeout,
                     retry_on_timeout=True,
-                    decode_responses=True  # Return string values instead of bytes
+                    decode_responses=True  
                 )
-                client.ping()  # Verify connection
+                client.ping() 
                 logger.info("Successfully connected to Redis")
                 return client
             except Exception as e:
@@ -179,32 +179,24 @@ class RedisTracker:
             complete_key = self._get_complete_key(request_id, item_id)
             metadata_key = self._get_metadata_key(request_id, item_id)
             
-            # Use a pipeline to execute multiple commands atomically
             with self.redis_client.pipeline() as pipe:
-                # Clear any existing data (in case of reprocessing)
                 pipe.delete(expected_key)
                 
-                # Add all expected assets
                 if assets:
                     pipe.sadd(expected_key, *assets)
                 
-                # Set expiry for expected assets key
                 pipe.expire(expected_key, self.key_expiry)
                 
-                # Initialize processed assets set if it doesn't exist
                 pipe.expire(processed_key, self.key_expiry)
                 
-                # Set completion flag to 0 (not complete)
                 pipe.set(complete_key, "0")
                 pipe.expire(complete_key, self.key_expiry)
                 
-                # Store metadata if provided
                 if metadata:
                     pipe.delete(metadata_key)
                     pipe.hset(metadata_key, mapping=metadata)
                     pipe.expire(metadata_key, self.key_expiry)
                 
-                # Execute all commands
                 pipe.execute()
                 
             logger.info(f"Set {len(assets)} expected assets for scene {item_id} (request {request_id})")
@@ -218,7 +210,6 @@ class RedisTracker:
         try:
             processed_key = self._get_processed_key(request_id, item_id)
             
-            # Add the asset to the processed set
             self.redis_client.sadd(processed_key, asset_id)
             self.redis_client.expire(processed_key, self.key_expiry)
             
@@ -231,32 +222,27 @@ class RedisTracker:
     
     def is_complete(self, request_id, item_id):
         try:
-            # Check if completion has already been flagged
             complete_key = self._get_complete_key(request_id, item_id)
             if self.redis_client.get(complete_key) == "1":
                 logger.info(f"Scene {item_id} already marked as complete")
-                return False  # Already marked as complete, no need to trigger again
+                return False  
             
             expected_key = self._get_expected_key(request_id, item_id)
             processed_key = self._get_processed_key(request_id, item_id)
             
-            # Get the expected and processed assets
             expected_assets = self.redis_client.smembers(expected_key)
             processed_assets = self.redis_client.smembers(processed_key)
             
-            # If there are no expected assets, the scene is not complete
             if not expected_assets:
                 logger.warning(f"No expected assets found for scene {item_id} (request {request_id})")
                 return False
             
-            # Check if all expected assets have been processed
             missing_assets = expected_assets - processed_assets
             is_complete = len(missing_assets) == 0
             
             if is_complete:
                 logger.info(f"All {len(expected_assets)} assets have been processed for scene {item_id}")
                 
-                # Mark as complete to avoid duplicate processing
                 self.redis_client.set(complete_key, "1")
                 self.redis_client.expire(complete_key, self.key_expiry)
                 
@@ -392,7 +378,6 @@ def main(context: Context):
         tracker = CompletionTracker(minio_client, redis_tracker, config)
         
         if event_type == "eo.scene.assets.registered":
-            # This is a scene registration, record the expected assets
             result = tracker.set_expected_assets(event_data)
             return {"status": "recorded_expectations", 
                     "request_id": event_data.get("request_id"),
@@ -403,7 +388,6 @@ def main(context: Context):
             completion_result = tracker.record_transformed_asset(event_data)
             
             if completion_result:
-                # scene ready event
                 response_event = create_cloud_event(
                     "eo.scene.ready",
                     completion_result,

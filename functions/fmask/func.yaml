@@ -3,7 +3,6 @@ name: fmask
 runtime: python
 registry: docker.io/davidandw190
 image: docker.io/davidandw190/fmask:latest
-namespace: eo-workflow
 created: 2025-03-17T17:54:58.183702719+02:00
 build:
   builder: pack

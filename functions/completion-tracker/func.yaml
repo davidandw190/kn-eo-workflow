@@ -3,7 +3,6 @@ name: completion-tracker
 runtime: python
 registry: docker.io/davidandw190
 image: docker.io/davidandw190/completion-tracker:latest
-namespace: eo-workflow
 created: 2025-03-17T12:16:35.880024682+02:00
 build:
   builder: pack

@@ -122,11 +122,9 @@ def load_asset_as_xarray(asset_data, asset_id):
             da = rxr.open_rasterio(tmp.name, masked=True).load()
             da = da.squeeze('band', drop=True)
             
-            # Normalize band values for Sentinel-2
-            # Most bands have reflectance values in 0-10000 range
             if asset_id.startswith('B'):
                 max_val = float(da.max().values)
-                if max_val > 100:  # Probably in the 0-10000 range
+                if max_val > 100:  
                     da = da / 10000.0
             
             return da
@@ -145,7 +143,6 @@ def create_cloud_event(event_type, data, source):
         "datacontenttype": "application/json",
     }, data)
 
-# Cloud masking utility functions adapted from your centralized workflow
 def compute_ndvi(red, nir):
     """Compute Normalized Difference Vegetation Index"""
     return (nir - red) / (nir + red + 1e-10)
@@ -164,14 +161,12 @@ def compute_cloud_shadow_mask(ds, config):
     Adapted from the Sentinel2Analyzer.compute_enhanced_land_cover method
     """
     logger.info("Computing cloud and shadow mask")
-    
-    # Extract bands (normalized to 0-1 range)
+
     blue = ds['B02'].values
     green = ds['B03'].values
     red = ds['B04'].values
     nir = ds['B08'].values
     
-    # For SWIR bands, check if they exist
     if 'B11' in ds and 'B12' in ds:
         swir1 = ds['B11'].values
         swir2 = ds['B12'].values
@@ -181,7 +176,6 @@ def compute_cloud_shadow_mask(ds, config):
         swir2 = None
         has_swir = False
     
-    # Get SCL band if available
     if 'SCL' in ds:
         scl = ds['SCL'].values.astype(np.uint8)
         has_scl = True
@@ -189,7 +183,6 @@ def compute_cloud_shadow_mask(ds, config):
         scl = None
         has_scl = False
     
-    # Compute indices
     ndvi = compute_ndvi(red, nir)
     ndwi = compute_ndwi(green, nir)
     
@@ -268,7 +261,6 @@ def compute_cloud_shadow_mask(ds, config):
 def save_fmask_to_tiff(fmask, reference_da):
     """Save FMask as GeoTIFF using reference DataArray for geospatial info"""
     try:
-        # Create a new DataArray with the same coordinates and CRS as the reference
         mask_da = xr.DataArray(
             fmask,
             dims=reference_da.dims,
@@ -276,11 +268,9 @@ def save_fmask_to_tiff(fmask, reference_da):
             attrs={'long_name': 'Cloud and shadow mask', 'units': 'class'}
         )
         
-        # Set the CRS from the reference DataArray
         if hasattr(reference_da, 'rio'):
             mask_da.rio.write_crs(reference_da.rio.crs, inplace=True)
         
-        # Save to a temporary file and read back as bytes
         with tempfile.NamedTemporaryFile(suffix='.tif') as tmp:
             mask_da.rio.to_raster(tmp.name, driver="GTiff")
             tmp.flush()
@@ -305,7 +295,6 @@ def main(context: Context):
         if isinstance(event_data, str):
             event_data = json.loads(event_data)
         
-        # Extract scene details
         request_id = event_data.get("request_id")
         item_id = event_data.get("item_id")
         collection = event_data.get("collection")
