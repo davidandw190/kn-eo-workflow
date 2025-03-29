@@ -22,7 +22,6 @@ spec:
         envFrom:
         - configMapRef:
             name: ingestion-config
-        env:
   sink:
     ref:
       apiVersion: eventing.knative.dev/v1
