@@ -3,6 +3,7 @@ name: completion-tracker
 runtime: python
 registry: docker.io/davidandw190
 image: docker.io/davidandw190/completion-tracker:latest
+namespace: eo-workflow
 created: 2025-03-17T12:16:35.880024682+02:00
 build:
   builder: pack
@@ -11,6 +12,6 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/completion-tracker@sha256:ff9aa6996544d60f4e06347a23f12ff5f1fc4a1cefb7a0200d16eb30fdde5f1d
+  image: docker.io/davidandw190/completion-tracker@sha256:f3bda9e4a553172d700aca6964ffa159fbe6076a21783721d12f5e1fdf9988ad
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"

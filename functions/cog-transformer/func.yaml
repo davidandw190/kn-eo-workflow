@@ -12,17 +12,6 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/cog-transformer@sha256:f12a3d092466215c019ea31fe6526ebb636b82530c20e6d22b5c1f0c9128d445
+  image: docker.io/davidandw190/cog-transformer@sha256:a7357d437a25a0da74b5017630eaa4968a8a8499713cd33a890cc9dd100df410
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"
-  #   serving.knative.dev/serviceAccountName: minio-vault-auth
-  #   vault.hashicorp.com/agent-init-first: "true"
-  #   vault.hashicorp.com/agent-inject: "true"
-  #   vault.hashicorp.com/agent-inject-secret-minio-config: minio/data/data/config
-  #   vault.hashicorp.com/agent-inject-status: update
-  #   vault.hashicorp.com/agent-inject-template-minio-config: |
-  #     {{- with secret "minio/data/data/config" -}}
-  #     export MINIO_ROOT_USER="{{ .Data.data.MINIO_ROOT_USER }}"
-  #     export MINIO_ROOT_PASSWORD="{{ .Data.data.MINIO_ROOT_PASSWORD }}"
-  #     {{- end -}}
-  # serviceAccountName: minio-vault-auth

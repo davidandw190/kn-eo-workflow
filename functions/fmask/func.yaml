@@ -3,6 +3,7 @@ name: fmask
 runtime: python
 registry: docker.io/davidandw190
 image: docker.io/davidandw190/fmask:latest
+namespace: eo-workflow
 created: 2025-03-17T17:54:58.183702719+02:00
 build:
   builder: pack
@@ -11,17 +12,6 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/fmask@sha256:dd688dcfb640648dbed806c005cfe21829d1ae1e6c59595a0c87d3d6db595493
+  image: docker.io/davidandw190/fmask@sha256:f3b487e7215e11f1eea20e01afb55c6fb51a8bb9773c4c4ba47cc3f54d7bb674
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"
-  #   serving.knative.dev/serviceAccountName: minio-vault-auth
-  #   vault.hashicorp.com/agent-init-first: "true"
-  #   vault.hashicorp.com/agent-inject: "true"
-  #   vault.hashicorp.com/agent-inject-secret-minio-config: minio/data/data/config
-  #   vault.hashicorp.com/agent-inject-status: update
-  #   vault.hashicorp.com/agent-inject-template-minio-config: |
-  #     {{- with secret "minio/data/data/config" -}}
-  #     export MINIO_ROOT_USER="{{ .Data.data.MINIO_ROOT_USER }}"
-  #     export MINIO_ROOT_PASSWORD="{{ .Data.data.MINIO_ROOT_PASSWORD }}"
-  #     {{- end -}}
-  # serviceAccountName: minio-vault-auth

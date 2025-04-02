@@ -1,11 +1,11 @@
 apiVersion: sources.knative.dev/v1
 kind: PingSource
 metadata:
-  name: test-ping-source
+  name: test-ping
   namespace: eo-workflow
 spec:
-  schedule: "*/2 * * * *"
-  data: '{"msg": "Hello, Knative!"}'
+  schedule: "*/1 * * * *" # every minute
+  data: '{"message": "Test event for EO workflow"}'
   sink:
     ref:
       apiVersion: eventing.knative.dev/v1

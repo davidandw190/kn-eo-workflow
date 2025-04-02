@@ -3,6 +3,7 @@ name: webhook
 runtime: python
 registry: docker.io/davidandw190
 image: docker.io/davidandw190/eo-webhook:latest
+namespace: eo-workflow
 created: 2025-03-17T00:56:15.655238904+02:00
 build:
   builder: pack
@@ -11,6 +12,6 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/eo-webhook@sha256:9fcad74031ef2bd92ed64a2a2dd27946a5e3d000f34b6ce3ca4fd8b6ab738a9a
+  image: docker.io/davidandw190/eo-webhook@sha256:120dec7aca64ce20ce8cdcf98a0428ff544b4cafd66d74c7e3f70b0f99767beb
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"
