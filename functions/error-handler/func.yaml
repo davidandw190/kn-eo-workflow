@@ -1,0 +1,15 @@
+specVersion: 0.36.0
+name: error-handler
+runtime: python
+registry: docker.io/davidandw190
+image: docker.io/davidandw190/error-handler:latest
+namespace: eo-workflow
+created: 2025-04-11T12:25:07.095339333+03:00
+build:
+  builder: pack
+  buildEnvs:
+  - name: PYTHONUNBUFFERED
+    value: "1"
+deploy:
+  namespace: eo-workflow
+  image: docker.io/davidandw190/error-handler@sha256:492e67e1df59eae1e0058858e11f63556953373a97dbf8aa044853d7fabf201c

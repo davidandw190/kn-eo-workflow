@@ -3,9 +3,6 @@ kind: Trigger
 metadata:
   name: search-request-trigger
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: search-request-trigger
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   broker: eo-event-broker
   filter:
@@ -19,12 +16,9 @@ kind: Trigger
 metadata:
   name: debug-all-events-trigger
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: debug-all-events-trigger
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   broker: eo-event-broker
-  # No filter = catch all events
+  # No filter means it receives all events
   subscriber:
     ref:
       apiVersion: serving.knative.dev/v1
