@@ -1,14 +1,13 @@
 from parliament import Context
 from cloudevents.http import CloudEvent
+from cloudevents.conversion import to_structured
 import os
 import time
 import logging
 import json
 import uuid
 from datetime import datetime, timezone
-from flask import Request, jsonify
-from minio import Minio
-import io
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,47 +18,19 @@ logger = logging.getLogger(__name__)
 def get_config():
     return {
         'event_source': os.getenv('EVENT_SOURCE', 'eo-workflow/webhook'),
-        'minio_endpoint': os.getenv('MINIO_ENDPOINT', 'minio.eo-workflow.svc.cluster.local:9000'),
-        'minio_access_key': os.getenv('MINIO_ACCESS_KEY', 'minioadmin'),
-        'minio_secret_key': os.getenv('MINIO_SECRET_KEY', 'minioadmin'),
-        'minio_secure': os.getenv('MINIO_SECURE', 'false').lower() == 'true',
-        'request_queue': os.getenv('REQUEST_QUEUE', 'requests')
+        'sink_url': os.getenv('K_SINK')
     }
 
-def initialize_minio_client(config):
-    """Initialize and return a MinIO client"""
-    return Minio(
-        config['minio_endpoint'],
-        access_key=config['minio_access_key'],
-        secret_key=config['minio_secret_key'],
-        secure=config['minio_secure']
-    )
-
-def ensure_request_queue(minio_client, bucket_name):
-    if not minio_client.bucket_exists(bucket_name):
-        minio_client.make_bucket(bucket_name)
-        logger.info(f"Created request queue bucket: {bucket_name}")
-
-def submit_request(minio_client, bucket_name, request_data):
-    request_id = request_data.get('request_id', str(uuid.uuid4()))
-    
-    if 'request_id' not in request_data:
-        request_data['request_id'] = request_id
-    
-    request_data['timestamp'] = int(time.time())
-    
-    request_json = json.dumps(request_data)
-    object_name = f"request-{request_id}-{int(time.time())}.json"
-    
-    minio_client.put_object(
-        bucket_name,
-        object_name,
-        io.BytesIO(request_json.encode('utf-8')),
-        length=len(request_json),
-        content_type="application/json"
-    )
-    
-    return request_id, object_name
+def create_cloud_event(event_type, data, source):
+    """Create a CloudEvent with the given parameters"""
+    return CloudEvent({
+        "specversion": "1.0",
+        "type": event_type,
+        "source": source,
+        "id": f"{event_type}-{int(time.time())}-{uuid.uuid4()}",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "datacontenttype": "application/json",
+    }, data)
 
 def main(context: Context):
     try:
@@ -79,14 +50,10 @@ def main(context: Context):
         time_range = body.get('time_range')
         
         if not bbox or not time_range:
-            return jsonify({
-                "error": "Missing required parameters: bbox, time_range"
-            }), 400
+            return {"error": "Missing required parameters: bbox, time_range"}, 400
             
         if not isinstance(bbox, list) or len(bbox) != 4:
-            return jsonify({
-                "error": "bbox must be a list of 4 numbers [west, south, east, north]"
-            }), 400
+            return {"error": "bbox must be a list of 4 numbers [west, south, east, north]"}, 400
             
         cloud_cover = body.get('cloud_cover', 20)
         max_items = body.get('max_items', 3)
@@ -102,25 +69,47 @@ def main(context: Context):
             "timestamp": int(time.time())
         }
         
-        minio_client = initialize_minio_client(config)
-        ensure_request_queue(minio_client, config['request_queue'])    
-        request_id, object_name = submit_request(minio_client, config['request_queue'], request_data)
-    
-        return jsonify({
-            "status": "success",
-            "message": "Earth Observation request submitted to processing queue",
-            "request_id": request_id,
-            "queue_object": object_name,
-            "parameters": {
-                "bbox": bbox,
-                "time_range": time_range,
-                "cloud_cover": cloud_cover,
-                "max_items": max_items
-            }
-        }), 202
+        # Create a CloudEvent
+        event = create_cloud_event(
+            event_type="eo.search.requested",
+            data=request_data,
+            source=config['event_source']
+        )
+        
+        # CHANGE: Direct delivery to broker if K_SINK is available
+        sink_url = config.get('sink_url')
+        if sink_url:
+            try:
+                # Convert CloudEvent to HTTP request
+                headers, body = to_structured(event)
+                
+                # Send the event directly to the broker
+                response = requests.post(
+                    sink_url,
+                    headers=headers,
+                    data=body,
+                    timeout=10
+                )
+                
+                if 200 <= response.status_code < 300:
+                    logger.info(f"Successfully sent event directly to broker: {event['type']} for request {request_id}")
+                    # Return success to the client
+                    return {
+                        "status": "success",
+                        "message": "Search request submitted successfully",
+                        "request_id": request_id
+                    }, 202
+                else:
+                    logger.error(f"Failed to send event to broker, status: {response.status_code}")
+                    # Continue to return the event as a fallback
+            except Exception as e:
+                logger.error(f"Error sending event directly to broker: {str(e)}")
+                # Continue to return the event as a fallback
+        
+        # Return the CloudEvent (standard Knative behavior)
+        logger.info(f"Emitting eo.search.requested event with request_id: {request_id}")
+        return event
         
     except Exception as e:
         logger.exception(f"Error in webhook handler: {str(e)}")
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return {"error": str(e)}, 500

@@ -1,14 +1,17 @@
 apiVersion: sources.knative.dev/v1
 kind: ContainerSource
 metadata:
-  name: ingestion
+  name: ingestion-source
   namespace: eo-workflow
+  labels:
+    app.kubernetes.io/name: ingestion-source
+    app.kubernetes.io/part-of: eo-processing-system
 spec:
   template:
     spec:
       containers:
-      - image: docker.io/davidandw190/eo-stac-ingestion:latest
-        name: ingestion
+      - image: docker.io/davidandw190/eo-ingestion:latest
+        name: ingestion-source
         env:
         - name: MINIO_ENDPOINT
           value: "minio.eo-workflow.svc.cluster.local:9000"
@@ -18,23 +21,25 @@ spec:
           value: "minioadmin"
         - name: RAW_BUCKET
           value: "raw-assets"
-        - name: REQUEST_QUEUE
-          value: "requests"
+        - name: STAC_COLLECTION
+          value: "sentinel-2-l2a"
         - name: EVENT_SOURCE
           value: "eo-workflow/ingestion"
-        - name: WATCH_INTERVAL
-          value: "30"
         - name: MAX_RETRIES
           value: "3"
         - name: MAX_ITEMS
           value: "1"
+        - name: CONNECTION_TIMEOUT
+          value: "5"
+        - name: MAX_WORKERS
+          value: "4"
         resources:
           limits:
-            cpu: 1
+            cpu: 2
             memory: 8Gi
           requests:
             cpu: 500m
-            memory: 4Gi
+            memory: 2Gi
   sink:
     ref:
       apiVersion: eventing.knative.dev/v1

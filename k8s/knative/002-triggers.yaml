@@ -1,6 +1,39 @@
 apiVersion: eventing.knative.dev/v1
 kind: Trigger
 metadata:
+  name: search-request-trigger
+  namespace: eo-workflow
+  labels:
+    app.kubernetes.io/name: search-request-trigger
+    app.kubernetes.io/part-of: eo-processing-system
+spec:
+  broker: eo-event-broker
+  filter:
+    attributes:
+      type: eo.search.requested
+  subscriber:
+    uri: http://ingestion-source.eo-workflow.svc.cluster.local
+---
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: debug-all-events-trigger
+  namespace: eo-workflow
+  labels:
+    app.kubernetes.io/name: debug-all-events-trigger
+    app.kubernetes.io/part-of: eo-processing-system
+spec:
+  broker: eo-event-broker
+  # No filter = catch all events
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: debug-events
+---
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
   name: cog-transformer-trigger
   namespace: eo-workflow
   labels:

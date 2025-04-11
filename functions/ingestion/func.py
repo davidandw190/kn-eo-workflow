@@ -1,20 +1,18 @@
+from parliament import Context
+from cloudevents.http import CloudEvent
 import os
 import time
+import logging
 import json
 import uuid
-import logging
-import threading
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import io
-import requests
-from flask import Flask, request, Response
-from minio import Minio
-import urllib3
 import planetary_computer
 from pystac_client import Client
-from cloudevents.http import CloudEvent, from_http
-from cloudevents.conversion import to_structured
+from minio import Minio
+import urllib3
 
 # Set up logging
 logging.basicConfig(
@@ -23,9 +21,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global processed request registry to avoid duplicates
-processed_requests = set()
-request_lock = threading.Lock()
+# Define a constant for the STAC catalog URL
+PC_CATALOG_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
 def get_config():
     """Get configuration from environment variables with sensible defaults"""
@@ -34,7 +31,7 @@ def get_config():
         'minio_access_key': os.getenv('MINIO_ACCESS_KEY', 'minioadmin'),
         'minio_secret_key': os.getenv('MINIO_SECRET_KEY', 'minioadmin'),
         'raw_bucket': os.getenv('RAW_BUCKET', 'raw-assets'),
-        'catalog_url': os.getenv('STAC_CATALOG_URL', 'https://planetarycomputer.microsoft.com/api/stac/v1'),
+        'catalog_url': os.getenv('STAC_CATALOG_URL', PC_CATALOG_URL),
         'collection': os.getenv('STAC_COLLECTION', 'sentinel-2-l2a'),
         'max_cloud_cover': float(os.getenv('MAX_CLOUD_COVER', '20')),
         'max_items': int(os.getenv('MAX_ITEMS', '3')),
@@ -71,7 +68,7 @@ def initialize_minio_client(config):
                 secret_key=config['minio_secret_key'],
                 secure=config['secure_connection'],
                 http_client=urllib3.PoolManager(
-                    maxsize=40,  # Larger connection pool for concurrent operations
+                    maxsize=40,  # Larger connection pool to handle concurrent operations
                     timeout=urllib3.Timeout(
                         connect=config['connection_timeout'],
                         read=config['connection_timeout']*3
@@ -339,64 +336,86 @@ def process_scene(minio_client, item, request_id, bbox, config):
     
     return registration_event, processed_assets
 
-def send_event(event, sink_url, retries=3):
-    """Send a CloudEvent to the sink with retries"""
-    logger.info(f"Sending event {event['type']} to {sink_url}")
+def send_events_synchronously(events, sink_url, config):
+    """Send events to the broker with retries, in a synchronous manner"""
+    from cloudevents.conversion import to_structured
     
-    # Convert CloudEvent to HTTP request
-    headers, body = to_structured(event)
+    logger.info(f"Sending {len(events)} events to sink: {sink_url}")
     
-    for attempt in range(retries):
-        try:
-            response = requests.post(
-                sink_url,
-                headers=headers,
-                data=body,
-                timeout=30
-            )
+    success_count = 0
+    # Process in small batches to avoid overwhelming the broker
+    batch_size = 5
+    
+    for i in range(0, len(events), batch_size):
+        batch = events[i:i+batch_size]
+        logger.info(f"Sending batch {i//batch_size + 1} of {(len(events) + batch_size - 1)//batch_size}")
+        
+        for event in batch:
+            # Convert CloudEvent to HTTP request format
+            headers, body = to_structured(event)
             
-            if 200 <= response.status_code < 300:
-                logger.info(f"Successfully sent event {event['type']}")
-                return True
-            else:
-                logger.warning(f"Failed to send event, status: {response.status_code}, attempt: {attempt+1}")
-                if attempt < retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
-                else:
-                    return False
-        except Exception as e:
-            logger.error(f"Error sending event (attempt {attempt+1}): {str(e)}")
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
-            else:
-                return False
+            # Send with retries
+            for attempt in range(3):
+                try:
+                    response = requests.post(
+                        sink_url,
+                        headers=headers,
+                        data=body,
+                        timeout=30
+                    )
+                    
+                    if 200 <= response.status_code < 300:
+                        success_count += 1
+                        logger.info(f"Successfully sent event: {event['type']} for {event.data.get('item_id', 'unknown')}")
+                        break
+                    else:
+                        logger.warning(f"Failed to send event, status: {response.status_code}, attempt: {attempt+1}")
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                except Exception as e:
+                    logger.error(f"Error sending event (attempt {attempt+1}): {str(e)}")
+                    if attempt < 2:  # Don't sleep after the last attempt
+                        time.sleep(2 ** attempt)
+        
+        # Brief pause between batches
+        time.sleep(1)
     
-    return False
+    return success_count
 
-def handle_search_requested(event_data, config):
-    """Process a search request and emit appropriate events"""
-    # Check for duplicate request processing
-    request_id = event_data.get('request_id')
-    
-    with request_lock:
-        if request_id in processed_requests:
-            logger.info(f"Request {request_id} already processed, skipping")
-            return True
-        processed_requests.add(request_id)
-    
+def main(context: Context):
+    """Main function for handling eo.search.requested events"""
     try:
-        logger.info(f"Processing search request: {request_id}")
+        logger.info("STAC Ingestion Function activated")
+        config = get_config()
+        
+        if not hasattr(context, 'cloud_event'):
+            error_msg = "No cloud event in context"
+            logger.error(error_msg)
+            return {"error": error_msg}, 400
+        
+        # Extract request data from the cloud event
+        event_data = context.cloud_event.data
+        if isinstance(event_data, str):
+            event_data = json.loads(event_data)
+        
+        event_type = context.cloud_event["type"]
+        
+        if event_type != "eo.search.requested":
+            logger.warning(f"Unexpected event type: {event_type}, expected: eo.search.requested")
+            return {"error": f"Unexpected event type: {event_type}"}, 400
+        
+        logger.info(f"Processing search request: {event_data.get('request_id')}")
         
         # Extract search parameters
         bbox = event_data.get('bbox')
         time_range = event_data.get('time_range')
         cloud_cover = event_data.get('cloud_cover', config['max_cloud_cover'])
         max_items = event_data.get('max_items', config['max_items'])
+        request_id = event_data.get('request_id', str(uuid.uuid4()))
         
-        # Validate parameters
         if not bbox or not time_range:
-            logger.error("Missing required parameters (bbox, time_range)")
-            return False
+            error_msg = "Missing required parameters (bbox, time_range)"
+            logger.error(error_msg)
+            return {"error": error_msg}, 400
         
         # Initialize MinIO client
         minio_client = initialize_minio_client(config)
@@ -413,19 +432,13 @@ def handle_search_requested(event_data, config):
         
         if not items:
             logger.warning("No scenes found matching the search criteria")
-            return False
+            return {"status": "no_scenes_found", "request_id": request_id}, 200
         
-        # Get sink URL for events
-        sink_url = config.get('sink_url')
-        if not sink_url:
-            logger.error("No K_SINK environment variable found. Cannot send events.")
-            return False
+        all_events = []
         
-        # Process each scene and send events
-        success = True
+        # Process each scene
         for item in items:
             try:
-                # Process scene - returns registration event and processed assets
                 registration_event, processed_assets = process_scene(
                     minio_client, 
                     item, 
@@ -435,75 +448,69 @@ def handle_search_requested(event_data, config):
                 )
                 
                 if registration_event and processed_assets:
-                    # Send the registration event
-                    logger.info(f"Sending registration event for scene {item.id}")
-                    if not send_event(registration_event, sink_url):
-                        success = False
+                    # Add the registration event
+                    all_events.append(registration_event)
                     
-                    # Send asset events
+                    # Create and add asset events
                     for asset_data in processed_assets:
                         asset_event = create_cloud_event(
                             "eo.asset.ingested",
                             asset_data,
                             config['event_source']
                         )
-                        
-                        logger.info(f"Sending ingestion event for asset {asset_data['asset_id']}")
-                        if not send_event(asset_event, sink_url):
-                            success = False
+                        all_events.append(asset_event)
             except Exception as e:
                 logger.error(f"Error processing scene {item.id}: {str(e)}")
-                success = False
         
-        return success
+        if not all_events:
+            error_msg = "No scenes were successfully processed"
+            logger.error(error_msg)
+            
+            error_event = create_cloud_event(
+                "eo.processing.error",
+                {
+                    "request_id": request_id,
+                    "error": error_msg,
+                    "timestamp": int(time.time())
+                },
+                config['event_source']
+            )
+            
+            return error_event
+        
+        # Get sink URL from environment
+        sink_url = config['sink_url']
+        if not sink_url:
+            logger.error("K_SINK environment variable not found. Cannot send events.")
+            return {"error": "K_SINK not configured"}, 500
+        
+        # Send all events directly to the broker
+        success_count = send_events_synchronously(all_events, sink_url, config)
+        
+        logger.info(f"Successfully sent {success_count} of {len(all_events)} events to broker")
+        
+        # Return a simple status response
+        return {
+            "status": "success",
+            "request_id": request_id,
+            "scenes_processed": len(items),
+            "events_emitted": success_count,
+            "total_events": len(all_events)
+        }, 200
         
     except Exception as e:
-        logger.exception(f"Error handling search request: {str(e)}")
-        return False
-
-# Create Flask app
-app = Flask(__name__)
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return {"status": "up"}
-
-@app.route('/', methods=['POST'])
-def handle_event():
-    # Get configuration
-    config = get_config()
-    
-    try:
-        # Parse CloudEvent
-        cloud_event = from_http(request.headers, request.get_data())
+        logger.exception(f"Error in STAC ingestion function: {str(e)}")
         
-        event_type = cloud_event['type']
-        event_source = cloud_event['source']
+        error_data = {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "request_id": event_data.get("request_id") if "event_data" in locals() else str(uuid.uuid4())
+        }
         
-        logger.info(f"Received CloudEvent type: {event_type} from {event_source}")
+        error_event = create_cloud_event(
+            "eo.processing.error",
+            error_data,
+            config['event_source']
+        )
         
-        # Process based on event type
-        if event_type == 'eo.search.requested':
-            if handle_search_requested(cloud_event.data, config):
-                return Response(status=204)  # No content but successful
-            else:
-                return Response(status=500)  # Server error
-        else:
-            logger.warning(f"Ignoring unknown event type: {event_type}")
-            return Response(status=400)  # Bad request
-    except Exception as e:
-        logger.exception(f"Error processing event: {str(e)}")
-        return Response(status=500)  # Server error
-
-if __name__ == '__main__':
-    # Log startup info
-    config = get_config()
-    logger.info(f"Starting ingestion container source with:")
-    logger.info(f"  MINIO_ENDPOINT: {config['minio_endpoint']}")
-    logger.info(f"  RAW_BUCKET: {config['raw_bucket']}")
-    logger.info(f"  MAX_ITEMS: {config['max_items']}")
-    logger.info(f"  K_SINK: {config.get('sink_url', '(not set)')}")
-    
-    # Start Flask app
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+        return error_event

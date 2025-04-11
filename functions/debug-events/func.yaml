@@ -1,10 +1,10 @@
 specVersion: 0.36.0
-name: cog-transformer
+name: debug-events
 runtime: python
 registry: docker.io/davidandw190
-image: docker.io/davidandw190/cog-transformer:latest
+image: docker.io/davidandw190/debug-events:latest
 namespace: eo-workflow
-created: 2025-03-17T12:04:42.970534761+02:00
+created: 2025-04-09T18:32:49.346093872+03:00
 build:
   builder: pack
   buildEnvs:
@@ -12,6 +12,6 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/cog-transformer@sha256:fa7f587cad809eb7adda2c113056a156956403b6ed433adb3ca9de64de2fcb1a
+  image: docker.io/davidandw190/debug-events@sha256:cccc9018ad1227210a6ad80a6782181835f819a6eeef62340f08101547341742
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"
