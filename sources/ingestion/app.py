@@ -5,6 +5,7 @@ import uuid
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import redis
 from datetime import datetime, timezone
 import io
 import requests
@@ -42,7 +43,11 @@ def get_config():
         'max_workers': int(os.getenv('MAX_WORKERS', '4')),
         'secure_connection': os.getenv('MINIO_SECURE', 'false').lower() == 'true',
         'event_source': os.getenv('EVENT_SOURCE', 'eo-workflow/ingestion'),
-        'sink_url': os.getenv('K_SINK')
+        'sink_url': os.getenv('K_SINK'),
+        'redis_host': os.getenv('REDIS_HOST', 'redis.eo-workflow.svc.cluster.local'),
+        'redis_port': int(os.getenv('REDIS_PORT', '6379')),
+        'redis_key_prefix': os.getenv('REDIS_KEY_PREFIX', 'eo:ingestion:'),
+        'redis_key_expiry': int(os.getenv('REDIS_KEY_EXPIRY', '86400'))  # 24 hours
     }
 
 def create_cloud_event(event_type, data, source):
@@ -92,6 +97,51 @@ def initialize_minio_client(config):
             logger.warning(f"Attempt {attempt + 1} failed, retrying: {str(e)}")
             time.sleep(config['connection_timeout'])
 
+def initialize_redis_client(config):
+    """Initialize Redis client for deduplication"""
+    redis_host = config.get('redis_host')
+    redis_port = config.get('redis_port')
+    
+    for attempt in range(config['max_retries']):
+        try:
+            logger.info(f"Connecting to Redis at {redis_host}:{redis_port}")
+            client = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                socket_timeout=config['connection_timeout'],
+                socket_connect_timeout=config['connection_timeout'],
+                retry_on_timeout=True,
+                decode_responses=True
+            )
+            client.ping()  # Test connection
+            logger.info("Successfully connected to Redis")
+            return client
+        except Exception as e:
+            if attempt == config['max_retries'] - 1:
+                logger.error(f"Failed to connect to Redis after {config['max_retries']} attempts: {str(e)}")
+                raise
+            logger.warning(f"Redis connection attempt {attempt + 1} failed, retrying: {str(e)}")
+            time.sleep(config['connection_timeout'])
+
+def is_event_processed(redis_client, event_type, unique_id, config):
+    """Check if an event has already been processed"""
+    try:
+        key = f"{config['redis_key_prefix']}{event_type}:{unique_id}"
+        return bool(redis_client.exists(key))
+    except Exception as e:
+        logger.warning(f"Redis check failed for {event_type}:{unique_id}: {str(e)}")
+        return False 
+
+def mark_event_processed(redis_client, event_type, unique_id, config):
+    """Mark an event as processed with TTL"""
+    try:
+        key = f"{config['redis_key_prefix']}{event_type}:{unique_id}"
+        redis_client.set(key, datetime.now(timezone.utc).isoformat())
+        redis_client.expire(key, config['redis_key_expiry'])
+        logger.debug(f"Marked {event_type}:{unique_id} as processed (TTL: {config['redis_key_expiry']}s)")
+    except Exception as e:
+        logger.warning(f"Failed to mark event as processed {event_type}:{unique_id}: {str(e)}")
+        
 def ensure_bucket(minio_client, bucket_name):
     """Ensure bucket exists, create if needed"""
     try:
@@ -133,7 +183,6 @@ def search_scenes(client, config, bbox, time_range, cloud_cover, max_items):
                 logger.warning("No scenes found for the specified parameters.")
                 return []
             
-            # Double-check limit enforcement - CRITICAL FIX
             if len(items) > max_items:
                 logger.info(f"Limiting to {max_items} scenes out of {len(items)} found")
                 items = items[:max_items]
@@ -268,10 +317,17 @@ def process_single_asset(minio_client, item, asset_id, request_id, config):
         logger.error(f"Error processing asset {asset_id}: {str(e)}")
         raise
 
-def process_scene(minio_client, item, request_id, bbox, config):
-    """Process all assets for a single scene"""
+def process_scene(minio_client, item, request_id, bbox, config, redis_client=None):
     scene_id = item.id
     collection_id = item.collection_id
+    
+    dedup_id = f"{request_id}:{scene_id}"
+    
+    if redis_client:
+        if is_event_processed(redis_client, "scene_registration", dedup_id, config):
+            logger.info(f"Scene {scene_id} already registered for request {request_id}, skipping")
+            return None, []
+    
     acquisition_date = item.datetime.strftime('%Y-%m-%d') if item.datetime else None
     cloud_cover = item.properties.get('eo:cloud_cover', 'N/A')
     
@@ -294,6 +350,10 @@ def process_scene(minio_client, item, request_id, bbox, config):
         "cloud_cover": cloud_cover
     }
     
+    # Mark this registration as processed if Redis is available
+    if redis_client:
+        mark_event_processed(redis_client, "scene_registration", dedup_id, config)
+    
     registration_event = create_cloud_event(
         "eo.scene.assets.registered",
         registration_data,
@@ -309,7 +369,8 @@ def process_scene(minio_client, item, request_id, bbox, config):
                 item, 
                 asset_id, 
                 request_id, 
-                config
+                config,
+                redis_client
             ): asset_id
             for asset_id in assets_to_ingest
         }
@@ -318,13 +379,94 @@ def process_scene(minio_client, item, request_id, bbox, config):
             asset_id = future_to_asset[future]
             try:
                 result = future.result()
-                processed_assets.append(result)
-                logger.info(f"Successfully processed asset {asset_id} for scene {scene_id}")
+                if result:  # Only add if asset was actually processed
+                    processed_assets.append(result)
+                    logger.info(f"Successfully processed asset {asset_id} for scene {scene_id}")
             except Exception as e:
                 logger.error(f"Failed to process asset {asset_id} for scene {scene_id}: {str(e)}")
     
     return registration_event, processed_assets
 
+def process_single_asset(minio_client, item, asset_id, request_id, config, redis_client=None):
+    """Process a single asset with deduplication"""
+    try:
+        scene_id = item.id
+        
+        # Create a unique deduplication ID
+        dedup_id = f"{request_id}:{scene_id}:{asset_id}"
+        
+        # Check if this asset has already been processed (if Redis is available)
+        if redis_client:
+            if is_event_processed(redis_client, "asset_ingestion", dedup_id, config):
+                logger.info(f"Asset {asset_id} already ingested for scene {scene_id}, skipping")
+                return None
+        
+        logger.info(f"Processing asset {asset_id} for item: {scene_id}, request: {request_id}")
+        
+        asset_data, asset_metadata = download_asset(item, asset_id, config)
+        
+        result = store_asset(
+            minio_client,
+            config['raw_bucket'],
+            item.id,
+            asset_id,
+            asset_data,
+            asset_metadata,
+            config
+        )
+        
+        result["request_id"] = request_id
+        
+        # Mark this asset as processed if Redis is available
+        if redis_client:
+            mark_event_processed(redis_client, "asset_ingestion", dedup_id, config)
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error processing asset {asset_id}: {str(e)}")
+        raise
+
+
+def process_single_asset(minio_client, item, asset_id, request_id, config, redis_client=None):
+    """Process a single asset with deduplication"""
+    try:
+        scene_id = item.id
+        
+        # Create a unique deduplication ID
+        dedup_id = f"{request_id}:{scene_id}:{asset_id}"
+        
+        # Check if this asset has already been processed (if Redis is available)
+        if redis_client:
+            if is_event_processed(redis_client, "asset_ingestion", dedup_id, config):
+                logger.info(f"Asset {asset_id} already ingested for scene {scene_id}, skipping")
+                return None
+        
+        logger.info(f"Processing asset {asset_id} for item: {scene_id}, request: {request_id}")
+        
+        asset_data, asset_metadata = download_asset(item, asset_id, config)
+        
+        result = store_asset(
+            minio_client,
+            config['raw_bucket'],
+            item.id,
+            asset_id,
+            asset_data,
+            asset_metadata,
+            config
+        )
+        
+        result["request_id"] = request_id
+        
+        # Mark this asset as processed if Redis is available
+        if redis_client:
+            mark_event_processed(redis_client, "asset_ingestion", dedup_id, config)
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error processing asset {asset_id}: {str(e)}")
+        raise
+    
+        
 def send_event(event, sink_url, retries=3, base_delay=1.0):
     """Send a CloudEvent to the sink with improved reliability"""
     event_type = event['type']
@@ -370,33 +512,55 @@ def send_event(event, sink_url, retries=3, base_delay=1.0):
     
     return False
 
-
+def send_error_event(error_msg, error_type, request_id, config):
+    """Send an error event to the broker"""
+    error_data = {
+        "error": error_msg,
+        "error_type": error_type,
+        "request_id": request_id,
+        "timestamp": int(time.time())
+    }
+    
+    error_event = create_cloud_event(
+        "eo.processing.error",
+        error_data,
+        config['event_source']
+    )
+    
+    sink_url = config.get('sink_url')
+    if sink_url:
+        send_event(error_event, sink_url)
+    else:
+        logger.error(f"Cannot send error event - no sink URL: {error_msg}")
 
 def handle_search_requested(event_data, config):
-    """Process a search request and emit appropriate events"""
-    request_id = event_data.get('request_id')
-    
-    with request_lock:
-        if request_id in processed_requests:
-            logger.info(f"Request {request_id} already processed, skipping")
-            return True
-        processed_requests.add(request_id)
+    request_id = event_data.get('request_id', "unknown")
     
     try:
+        # init Redis for deduplication
+        redis_client = None
+        try:
+            redis_client = initialize_redis_client(config)
+            
+            if is_event_processed(redis_client, "search_request", request_id, config):
+                logger.info(f"Request {request_id} already processed, skipping")
+                return True
+                
+            mark_event_processed(redis_client, "search_request", request_id, config)
+        except Exception as redis_error:
+            logger.warning(f"Redis connection failed, proceeding without deduplication: {str(redis_error)}")
+        
         logger.info(f"Processing search request: {request_id}")
         
-        # Extract parameters
         bbox = event_data.get('bbox')
         time_range = event_data.get('time_range')
         cloud_cover = event_data.get('cloud_cover', config['max_cloud_cover'])
         max_items = event_data.get('max_items', config['max_items'])
         
-        # Validate parameters
         if not bbox or not time_range:
             logger.error("Missing required parameters (bbox, time_range)")
             return False
         
-        # Initialize clients
         minio_client = initialize_minio_client(config)
         ensure_bucket(minio_client, config['raw_bucket'])
         
@@ -405,39 +569,34 @@ def handle_search_requested(event_data, config):
             modifier=planetary_computer.sign_inplace
         )
         
-        # Search for scenes
         items = search_scenes(stac_client, config, bbox, time_range, cloud_cover, max_items)
         
         if not items:
             logger.warning("No scenes found matching the search criteria")
             return False
         
-        # Get sink URL for events
         sink_url = config.get('sink_url')
         if not sink_url:
             logger.error("No K_SINK environment variable found. Cannot send events.")
             return False
         
-        # Process scenes sequentially to avoid overwhelming the system
         success = True
         for item in items:
             try:
-                # Process scene and get events
                 registration_event, processed_assets = process_scene(
                     minio_client, 
                     item, 
                     request_id, 
                     bbox, 
-                    config
+                    config,
+                    redis_client
                 )
                 
                 if registration_event and processed_assets:
-                    # Send the registration event
                     logger.info(f"Sending registration event for scene {item.id}")
                     if not send_event(registration_event, sink_url):
                         success = False
                     
-                    # Send asset events
                     for asset_data in processed_assets:
                         asset_event = create_cloud_event(
                             "eo.asset.ingested",
@@ -452,7 +611,6 @@ def handle_search_requested(event_data, config):
                 logger.error(f"Error processing scene {item.id}: {str(e)}")
                 success = False
         
-        # Send completion event
         completion_data = {
             "request_id": request_id,
             "scenes_processed": len(items),
@@ -473,70 +631,72 @@ def handle_search_requested(event_data, config):
     except Exception as e:
         logger.exception(f"Error handling search request: {str(e)}")
         return False
-    
-    
-      
-# Create Flask app
+       
 app = Flask(__name__)
 
 @app.route('/health', methods=['GET'])
 def health_check():
     return {"status": "up"}
 
-# sources/ingestion/app.py - Update the event handler
 @app.route('/', methods=['POST'])
 def handle_event():
-    """Handle incoming CloudEvents"""
+    """Handle direct requests from webhook or CloudEvents from broker"""
     config = get_config()
     
     try:
-        # Parse the CloudEvent
-        event_data = request.get_json()
-        
-        # For Knative events, try to parse as CloudEvent
-        if 'type' in request.headers:
-            try:
-                cloud_event = from_http(request.headers, request.get_data())
-                event_type = cloud_event['type']
+        try:
+            request_data = request.get_json(silent=True)
+            
+            if isinstance(request_data, dict) and 'request_id' in request_data and 'bbox' in request_data:
+                logger.info(f"Received direct request from webhook, request_id: {request_data.get('request_id')}")
                 
-                logger.info(f"Received CloudEvent: {event_type}")
+                thread = threading.Thread(
+                    target=handle_search_requested,
+                    args=(request_data, config)
+                )
+                thread.daemon = True
+                thread.start()
                 
-                if event_type == 'eo.search.requested':
-                    logger.info("Processing search request event")
-                    
-                    # Extract data from CloudEvent
-                    event_data = cloud_event.data
-                    if isinstance(event_data, str):
-                        event_data = json.loads(event_data)
-                    
-                    # Process in background thread to return quickly
-                    import threading
-                    thread = threading.Thread(
-                        target=handle_search_requested,
-                        args=(event_data, config)
-                    )
-                    thread.daemon = True
-                    thread.start()
-                    
-                    return Response(status=204)  # Success with no content
-            except Exception as ce_error:
-                logger.error(f"Error parsing CloudEvent: {ce_error}")
+                return Response(status=202)  # Accepted
+                
+        except Exception as json_err:
+            logger.warning(f"Failed to parse as direct JSON request: {str(json_err)}")
         
-        # Fallback for direct JSON
-        if isinstance(event_data, dict) and 'request_id' in event_data and 'bbox' in event_data:
-            logger.info("Processing direct JSON request")
-            handle_search_requested(event_data, config)
-            return Response(status=204)
+        try:
+            cloud_event = from_http(request.headers, request.get_data())
+            event_type = cloud_event['type']
+            
+            logger.info(f"Received CloudEvent: {event_type}")
+            
+            event_data = cloud_event.data
+            if isinstance(event_data, str):
+                try:
+                    event_data = json.loads(event_data)
+                except:
+                    logger.warning("Could not parse event data as JSON")
+            
+            if event_type == 'eo.search.requested':
+                logger.info(f"Processing search request event: {event_data.get('request_id', 'unknown')}")
+                
+                thread = threading.Thread(
+                    target=handle_search_requested,
+                    args=(event_data, config)
+                )
+                thread.daemon = True
+                thread.start()
+                
+                return Response(status=202)  # Accepted
+        except Exception as ce_error:
+            logger.warning(f"Failed to parse as CloudEvent: {str(ce_error)}")
         
-        logger.warning(f"Unrecognized event format")
-        return Response(status=400)
+        logger.warning(f"Unrecognized request format")
+        return Response(status=400)  # Bad request
         
     except Exception as e:
-        logger.exception(f"Error processing event: {str(e)}")
-        return Response(status=500)
+        logger.exception(f"Error processing request: {str(e)}")
+        return Response(status=500)  # Internal server error
     
 if __name__ == '__main__':
-    # Log startup info
     config = get_config()
     logger.info(f"Starting ingestion container source with:")
     logger.info(f"  MINIO_ENDPOINT: {config['minio_endpoint']}")
@@ -544,6 +704,5 @@ if __name__ == '__main__':
     logger.info(f"  MAX_ITEMS: {config['max_items']}")
     logger.info(f"  K_SINK: {config.get('sink_url', '(not set)')}")
     
-    # Start Flask app
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)

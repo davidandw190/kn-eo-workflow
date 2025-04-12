@@ -12,6 +12,4 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/cog-transformer@sha256:fa7f587cad809eb7adda2c113056a156956403b6ed433adb3ca9de64de2fcb1a
-  annotations:
-    serving.knative.dev/preserveCloudEvents: "true"
+  image: docker.io/davidandw190/cog-transformer@sha256:c715327f9fcc2cb09f5169ed96dfb74ad85c18423144e031a379849f8d9055d6

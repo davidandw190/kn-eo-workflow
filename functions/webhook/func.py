@@ -1,10 +1,10 @@
 from parliament import Context
-from cloudevents.http import CloudEvent
 import os
 import time
 import logging
 import json
 import uuid
+import requests
 from datetime import datetime, timezone
 
 logging.basicConfig(
@@ -12,17 +12,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-def create_cloud_event(event_type, data, source):
-    """Create a CloudEvent with the given parameters"""
-    return CloudEvent({
-        "specversion": "1.0",
-        "type": event_type,
-        "source": source,
-        "id": f"{event_type}-{int(time.time())}-{uuid.uuid4()}",
-        "time": datetime.now(timezone.utc).isoformat(),
-        "datacontenttype": "application/json",
-    }, data)
 
 def main(context: Context):
     try:
@@ -63,20 +52,38 @@ def main(context: Context):
             "timestamp": int(time.time())
         }
         
-        create_cloud_event(
-            event_type="eo.search.requested",
-            data=request_data,
-            source="eo-workflow/webhook"
-        )
+        ingestion_url = "http://ingestion-service.eo-workflow.svc.cluster.local"
+        max_retries = 3
+        retry_delay = 1  # seconds
         
-        logger.info(f"Emitting search request event with ID: {request_id}")
-        
-        return {
-            "status": "success",
-            "message": "Search request submitted",
-            "request_id": request_id
-        }, 202
-        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Sending request to ingestion service (attempt {attempt+1}/{max_retries})")
+                response = requests.post(
+                    ingestion_url, 
+                    json=request_data, 
+                    headers={"Content-Type": "application/json"},
+                    timeout=10
+                )
+                
+                if response.status_code >= 200 and response.status_code < 300:
+                    logger.info(f"Successfully sent request. Status: {response.status_code}")
+                    return {"status": "success", "message": "Search request submitted", "request_id": request_id}, 202
+                else:
+                    logger.warning(f"Request failed with status: {response.status_code}, Response: {response.text}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                    else:
+                        return {"error": f"Failed to submit request: HTTP {response.status_code}"}, 500
+            except Exception as e:
+                logger.warning(f"Request attempt {attempt+1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    return {"error": f"Failed to submit request after {max_retries} attempts: {str(e)}"}, 500
+    
     except Exception as e:
         logger.exception(f"Error in webhook handler: {str(e)}")
         return {"error": "Server error processing request"}, 500

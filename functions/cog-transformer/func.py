@@ -123,30 +123,37 @@ def download_asset(minio_client, bucket, object_name, config):
             logger.warning(f"Download attempt {attempt + 1} failed: {str(e)}")
             time.sleep(config['connection_timeout'])
 
+
 def convert_to_cog(input_data, profile="deflate"):
-    """Convert raster data to Cloud Optimized GeoTIFF format"""
+    """Convert raster data to Cloud Optimized GeoTIFF format with better error handling"""
     logger.info("Converting data to Cloud Optimized GeoTIFF format")
     
     with tempfile.NamedTemporaryFile(suffix='.tif') as tmp_src:
         tmp_src.write(input_data)
         tmp_src.flush()
         
+        # Check if the input file is valid
+        try:
+            with rasterio.open(tmp_src.name) as src:
+                # Get basic info to verify the file is readable
+                width = src.width
+                height = src.height
+                dtype = src.dtypes[0]
+                logger.info(f"Input raster dimensions: {width}x{height}, type: {dtype}")
+                
+                # For higher bit-depth data, adjust compression
+                if dtype in ['uint16', 'int16', 'float32']:
+                    output_profile = cog_profiles.get("deflate")
+                    output_profile["predictor"] = 2
+                else:
+                    output_profile = cog_profiles.get(profile)
+                
+                output_profile["blocksize"] = 512
+        except Exception as e:
+            logger.error(f"Invalid input raster file: {str(e)}")
+            raise RuntimeError(f"Invalid input raster: {str(e)}")
+        
         with tempfile.NamedTemporaryFile(suffix='.tif') as tmp_dst:
-            # Setup COG profile
-            output_profile = cog_profiles.get(profile)
-            output_profile["blocksize"] = 512
-            
-            # Try to determine input datatype for profile adjustment
-            try:
-                with rasterio.open(tmp_src.name) as src:
-                    dtype = src.dtypes[0]
-                    # For higher bit-depth data, adjust compression
-                    if dtype in ['uint16', 'int16', 'float32']:
-                        output_profile["compress"] = "deflate"
-                        output_profile["predictor"] = 2
-            except Exception as e:
-                logger.warning(f"Could not determine input datatype, using default profile: {str(e)}")
-            
             # Convert to COG
             try:
                 cog_translate(
@@ -166,7 +173,7 @@ def convert_to_cog(input_data, profile="deflate"):
             except Exception as e:
                 logger.error(f"Error in COG conversion: {str(e)}")
                 raise RuntimeError(f"COG conversion failed: {str(e)}")
-
+            
 def store_cog(minio_client, bucket, object_name, data, metadata, config):
     """Store the COG in MinIO with retries"""
     max_retries = config['max_retries']

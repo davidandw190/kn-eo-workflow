@@ -12,4 +12,6 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/eo-webhook@sha256:c5cfcf5dce35ae1ed3227b39ea1890b0610dc5db0fb1463ba0da2b6c44855684
+  image: docker.io/davidandw190/eo-webhook@sha256:ebd0150b2c6b61a75691b8af272aa21578a4d457ed9579e2cdba0246459b69a6
+  annotations:
+    serving.knative.dev/preserveCloudEvents: "true"

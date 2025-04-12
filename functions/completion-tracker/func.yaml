@@ -12,6 +12,4 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/completion-tracker@sha256:f3bda9e4a553172d700aca6964ffa159fbe6076a21783721d12f5e1fdf9988ad
-  annotations:
-    serving.knative.dev/preserveCloudEvents: "true"
+  image: docker.io/davidandw190/completion-tracker@sha256:5d8c1c331f2f0544abee3eb8ce9e84ab1fcd1470b06a64f604f918ade6facabc

@@ -9,7 +9,7 @@ spec:
     attributes:
       type: eo.search.requested
   subscriber:
-    uri: http://ingestion-source.eo-workflow.svc.cluster.local
+    uri: http://ingestion-source-deployment.eo-workflow.svc.cluster.local:8080
 ---
 apiVersion: eventing.knative.dev/v1
 kind: Trigger

@@ -128,7 +128,7 @@ class RedisTracker:
         self.max_retries = config.get('max_retries', 3)
         self.connection_timeout = config.get('connection_timeout', 5)
         self.redis_client = self._initialize_connection()
-        
+    
     def _initialize_connection(self):
         """Establish connection to Redis with retries"""
         for attempt in range(self.max_retries):
@@ -140,7 +140,8 @@ class RedisTracker:
                     socket_timeout=self.connection_timeout,
                     socket_connect_timeout=self.connection_timeout,
                     retry_on_timeout=True,
-                    decode_responses=True  
+                    decode_responses=True,
+                    health_check_interval=15  # Add health check
                 )
                 client.ping() 
                 logger.info("Successfully connected to Redis")
@@ -151,6 +152,7 @@ class RedisTracker:
                     raise
                 logger.warning(f"Redis connection attempt {attempt + 1} failed, retrying: {str(e)}")
                 time.sleep(self.connection_timeout)
+
     
     def _get_scene_key(self, request_id, item_id):
         """Get Redis key for a specific scene"""
@@ -297,38 +299,50 @@ class CompletionTracker:
         
         logger.info(f"Recording transformed asset: {asset_id} for item: {item_id}, request: {request_id}")
         
-        self.redis_tracker.record_asset(request_id, item_id, asset_id)
+        if not self.redis_tracker.record_asset(request_id, item_id, asset_id):
+            logger.error(f"Failed to record asset {asset_id} in Redis")
+            return None
         
-        is_complete = self.redis_tracker.is_complete(request_id, item_id)
-        if is_complete:
-            logger.info(f"All assets for item {item_id} have been processed!")
+        try:
+            is_complete = self.redis_tracker.is_complete(request_id, item_id)
             
-            processed_assets = list(self.redis_tracker.get_processed_assets(request_id, item_id))
+            if is_complete:
+                logger.info(f"All assets for item {item_id} have been processed!")
+                
+                processed_assets = list(self.redis_tracker.get_processed_assets(request_id, item_id))
+                
+                if not processed_assets:
+                    logger.warning(f"No processed assets found for completed item {item_id}")
+                    return None
+                
+                metadata = self.redis_tracker.get_scene_metadata(request_id, item_id)
+                
+                result = {
+                    "request_id": request_id,
+                    "item_id": item_id,
+                    "collection": collection,
+                    "assets": processed_assets,
+                    "cog_bucket": self.cog_bucket,
+                    "timestamp": int(time.time())
+                }
+                
+                if "bbox" in metadata:
+                    try:
+                        result["bbox"] = json.loads(metadata["bbox"])
+                    except Exception as e:
+                        logger.warning(f"Could not parse bbox from metadata: {str(e)}")
+                
+                if "acquisition_date" in metadata:
+                    result["acquisition_date"] = metadata["acquisition_date"]
+                
+                return result
             
-            metadata = self.redis_tracker.get_scene_metadata(request_id, item_id)
-            
-            result = {
-                "request_id": request_id,
-                "item_id": item_id,
-                "collection": collection,
-                "assets": processed_assets,
-                "cog_bucket": self.cog_bucket,
-                "timestamp": int(time.time())
-            }
-            
-            if "bbox" in metadata:
-                try:
-                    result["bbox"] = json.loads(metadata["bbox"])
-                except Exception as e:
-                    logger.warning(f"Could not parse bbox from metadata: {str(e)}")
-            
-            if "acquisition_date" in metadata:
-                result["acquisition_date"] = metadata["acquisition_date"]
-            
-            return result
-        
-        return None
-
+            return None
+        except Exception as e:
+            logger.error(f"Error checking completion status: {str(e)}")
+            return None
+    
+    
     def set_expected_assets(self, event_data):
         request_id = event_data.get("request_id", "unknown")
         item_id = event_data.get("item_id", "unknown")

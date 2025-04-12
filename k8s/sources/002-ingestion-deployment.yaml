@@ -33,6 +33,14 @@ spec:
           value: "5"
         - name: MAX_WORKERS
           value: "4"
+        - name: REDIS_HOST
+          value: "redis.eo-workflow.svc.cluster.local"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_KEY_PREFIX
+          value: "eo:ingestion:"
+        - name: REDIS_KEY_EXPIRY
+          value: "86400"
         resources:
           limits:
             cpu: 2
@@ -45,3 +53,19 @@ spec:
       apiVersion: eventing.knative.dev/v1
       kind: Broker
       name: eo-event-broker
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestion-service
+  namespace: eo-workflow
+  labels:
+    app.kubernetes.io/name: ingestion-service
+    app.kubernetes.io/part-of: eo-processing-system
+spec:
+  selector:
+    sources.knative.dev/containerSource: ingestion-source
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
