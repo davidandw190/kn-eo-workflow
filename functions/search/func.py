@@ -58,7 +58,7 @@ def search_scenes(config, bbox, time_range, cloud_cover, max_items):
     for attempt in range(max_retries):
         try:
             search = client.search(**search_params)
-            items = list(search.get_items())
+            items = list(search.items())
             
             if not items:
                 logger.warning("No scenes found for the specified parameters.")
@@ -143,21 +143,27 @@ def main(context: Context):
                 cloud_cover_pct = item.properties.get('eo:cloud_cover', 'N/A')
                 
                 # find available band assets
-                band_assets = [f"B{i:02d}" for i in range(1, 13)] + ["B8A", "SCL"]
-                available_assets = [band for band in band_assets if band in item.assets]
+                band_assets = [band for band in ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B09', 'B11', 'B12', 'SCL'] 
+                              if band in item.assets]
                 
-                if not available_assets:
+                if not band_assets:
                     logger.warning(f"No relevant assets found for scene {scene_id}")
                     continue
+                
+                # Extract sun azimuth and elevation for shadows processing
+                sun_azimuth = item.properties.get('view:sun_azimuth')
+                sun_elevation = item.properties.get('view:sun_elevation')
                 
                 scene_data = {
                     "request_id": request_id,
                     "item_id": scene_id,
                     "collection": collection_id,
-                    "assets": available_assets,
+                    "assets": band_assets,
                     "bbox": bbox,
                     "acquisition_date": acquisition_date,
-                    "cloud_cover": cloud_cover_pct
+                    "cloud_cover": cloud_cover_pct,
+                    "sun_azimuth": sun_azimuth,
+                    "sun_elevation": sun_elevation
                 }
                 
                 scene_event = create_cloud_event(
@@ -185,7 +191,6 @@ def main(context: Context):
             
             if scene_events:
                 # we return the scene discovered event first
-                # and DO NOT return the completion event until all scenes are processed
                 first_scene = scene_events[0]
                 logger.info(f"Returning scene discovered event to broker for item {first_scene.data['item_id']}")
                 return first_scene

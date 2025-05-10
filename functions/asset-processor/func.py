@@ -87,13 +87,15 @@ def download_asset(asset_href, config):
     
     for attempt in range(max_retries):
         try:
-            if 'planetarycomputer' in asset_href:
-                asset_href = planetary_computer.sign(asset_href)
+            signed_href = asset_href
+            if 'planetarycomputer.microsoft.com' in asset_href:
+                signed_href = planetary_computer.sign(asset_href)
+                logger.info(f"Signed Planetary Computer URL: {signed_href}")
                 
             timeout = (config['connection_timeout'], config['connection_timeout'] * 5)
             
             with requests.get(
-                asset_href, 
+                signed_href, 
                 stream=True, 
                 timeout=timeout
             ) as response:
@@ -149,7 +151,10 @@ def process_asset(stac_item, asset_id, request_id, config):
     
     asset = stac_item['assets'][asset_id]
     asset_href = asset['href']
+    
+    logger.info(f"Downloading asset from URL: {asset_href}")
     asset_data = download_asset(asset_href, config)
+    
     metadata = {
         "item_id": stac_item['id'],
         "collection": stac_item['collection'],

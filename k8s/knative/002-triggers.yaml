@@ -170,16 +170,3 @@ spec:
       apiVersion: serving.knative.dev/v1
       kind: Service
       name: debug-events
----
-apiVersion: eventing.knative.dev/v1
-kind: Trigger
-metadata:
-  name: monitor-all-events
-  namespace: eo-workflow
-spec:
-  broker: eo-event-broker
-  subscriber:
-    ref:
-      apiVersion: v1
-      kind: Service
-      name: event-monitor
