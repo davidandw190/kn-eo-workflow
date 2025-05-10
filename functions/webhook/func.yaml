@@ -7,11 +7,8 @@ namespace: eo-workflow
 created: 2025-03-17T00:56:15.655238904+02:00
 build:
   builder: pack
-  buildEnvs:
-  - name: PYTHONUNBUFFERED
-    value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/eo-webhook@sha256:ebd0150b2c6b61a75691b8af272aa21578a4d457ed9579e2cdba0246459b69a6
+  image: docker.io/davidandw190/eo-webhook@sha256:80864db67f9425d33ae347e9fcf64836a6e5ab5099bd765d89a868c02777f4a2
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"

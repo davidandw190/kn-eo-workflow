@@ -1,0 +1,32 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: search
+  namespace: eo-workflow
+  labels:
+    app.kubernetes.io/name: search
+    app.kubernetes.io/part-of: eo-processing-system
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "5"
+        serving.knative.dev/preserveCloudEvents: "true"
+    spec:
+      containers:
+      - image: docker.io/davidandw190/eo-search:latest
+        env:
+        - name: EVENT_SOURCE
+          value: "eo-workflow/search"
+        - name: STAC_COLLECTION
+          value: "sentinel-2-l2a"
+        - name: STAC_CATALOG_URL
+          value: "https://planetarycomputer.microsoft.com/api/stac/v1"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"

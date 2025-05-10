@@ -50,7 +50,6 @@ def initialize_minio_client(config):
                 secure=config['secure_connection']
             )
             
-            # Test connection
             client.list_buckets()
             logger.info("Successfully connected to MinIO")
             return client
@@ -123,32 +122,40 @@ def download_asset(minio_client, bucket, object_name, config):
             logger.warning(f"Download attempt {attempt + 1} failed: {str(e)}")
             time.sleep(config['connection_timeout'])
 
-
 def convert_to_cog(input_data, profile="deflate"):
-    """Convert raster data to Cloud Optimized GeoTIFF format with better error handling"""
+    """Convert raster data to Cloud Optimized GeoTIFF format with better error handling
+    and improved performance"""
     logger.info("Converting data to Cloud Optimized GeoTIFF format")
     
     with tempfile.NamedTemporaryFile(suffix='.tif') as tmp_src:
         tmp_src.write(input_data)
         tmp_src.flush()
         
-        # Check if the input file is valid
         try:
             with rasterio.open(tmp_src.name) as src:
-                # Get basic info to verify the file is readable
                 width = src.width
                 height = src.height
                 dtype = src.dtypes[0]
                 logger.info(f"Input raster dimensions: {width}x{height}, type: {dtype}")
                 
-                # For higher bit-depth data, adjust compression
                 if dtype in ['uint16', 'int16', 'float32']:
                     output_profile = cog_profiles.get("deflate")
                     output_profile["predictor"] = 2
                 else:
                     output_profile = cog_profiles.get(profile)
                 
-                output_profile["blocksize"] = 512
+                output_profile["blocksize"] = min(512, width, height)
+                if "BLOCKSIZE" in output_profile:
+                    del output_profile["BLOCKSIZE"]
+                    
+                if width * height > 100000000:  # For very large images
+                    output_profile["overview_level"] = 6
+                elif width * height > 25000000:
+                    output_profile["overview_level"] = 5
+                else:
+                    output_profile["overview_level"] = 3
+                    
+                output_profile["overview_resampling"] = "average"
         except Exception as e:
             logger.error(f"Invalid input raster file: {str(e)}")
             raise RuntimeError(f"Invalid input raster: {str(e)}")
@@ -175,7 +182,6 @@ def convert_to_cog(input_data, profile="deflate"):
                 raise RuntimeError(f"COG conversion failed: {str(e)}")
             
 def store_cog(minio_client, bucket, object_name, data, metadata, config):
-    """Store the COG in MinIO with retries"""
     max_retries = config['max_retries']
     
     for attempt in range(max_retries):
@@ -200,39 +206,35 @@ def store_cog(minio_client, bucket, object_name, data, metadata, config):
             time.sleep(config['connection_timeout'])
 
 def main(context: Context):
-    """Main function handler for processing COG transformations"""
     try:
         logger.info("COG Transformer function activated")
         
-        # Get configuration
         config = get_config()
         
-        # Check if we have a cloud event
         if not hasattr(context, 'cloud_event'):
             error_msg = "No cloud event in context"
             logger.error(error_msg)
             return {"error": error_msg}, 400
         
-        # Extract event data
         event_data = context.cloud_event.data
         if isinstance(event_data, str):
             event_data = json.loads(event_data)
         
         event_type = context.cloud_event["type"]
         
-        # Determine source and target buckets based on event type
         is_fmask = event_type == "eo.fmask.completed"
         
         if is_fmask:
             source_bucket = config['fmask_raw_bucket']
             target_bucket = config['fmask_cog_bucket']
             response_event_type = "eo.fmask.transformed"
+            logger.info("Processing FMask data")
         else:
             source_bucket = config['raw_bucket']
             target_bucket = config['cog_bucket']
             response_event_type = "eo.asset.transformed"
+            logger.info("Processing standard asset")
         
-        # Extract required fields from event
         bucket = event_data.get("bucket", source_bucket)
         object_name = event_data.get("object_name")
         item_id = event_data.get("item_id")
@@ -240,7 +242,6 @@ def main(context: Context):
         request_id = event_data.get("request_id", str(uuid.uuid4()))
         collection = event_data.get("collection", "unknown")
         
-        # Validate required fields
         if not object_name:
             error_msg = "Missing required parameter: object_name"
             logger.error(error_msg)
@@ -251,24 +252,14 @@ def main(context: Context):
             logger.error(error_msg)
             return {"error": error_msg}, 400
         
-        logger.info(f"Processing asset: {object_name} from bucket: {bucket}")
+        logger.info(f"Processing {asset_id or 'unknown asset'}: {object_name} from bucket: {bucket}")
         
-        # Initialize MinIO client
         minio_client = initialize_minio_client(config)
-        
-        # Ensure target bucket exists
         ensure_bucket(minio_client, target_bucket, config)
-        
-        # Download the asset
         asset_data, metadata = download_asset(minio_client, bucket, object_name, config)
-        
-        # Convert to COG
-        cog_data = convert_to_cog(asset_data)
-        
-        # Store the COG
+        cog_data = convert_to_cog(asset_data)        
         store_cog(minio_client, target_bucket, object_name, cog_data, metadata, config)
-        
-        # If asset_id is not provided, try to extract from object_name
+ 
         if not asset_id:
             parts = object_name.split("/")
             if len(parts) >= 3:
@@ -276,7 +267,6 @@ def main(context: Context):
             else:
                 asset_id = "unknown"
         
-        # Prepare result data
         result = {
             "source_bucket": bucket,
             "source_object": object_name,
@@ -290,20 +280,18 @@ def main(context: Context):
             "is_fmask": is_fmask
         }
         
-        # Create response event
         response_event = create_cloud_event(
             response_event_type,
             result,
             config['event_source']
         )
         
-        logger.info(f"Successfully transformed asset to COG: {object_name}")
+        logger.info(f"Successfully transformed {asset_id or 'unknown asset'} to COG: {object_name}")
         return response_event
         
     except Exception as e:
         logger.exception(f"Error in COG transformer function: {str(e)}")
         
-        # Create an error event
         error_data = {
             "error": str(e),
             "error_type": type(e).__name__,
@@ -319,3 +307,5 @@ def main(context: Context):
         )
         
         return error_event
+    
+    

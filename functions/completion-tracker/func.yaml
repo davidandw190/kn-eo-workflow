@@ -10,6 +10,16 @@ build:
   buildEnvs:
   - name: PYTHONUNBUFFERED
     value: "1"
+run:
+  envs:
+  - name: REDIS_HOST
+    value: redis.eo-workflow.svc.cluster.local
+  - name: REDIS_PORT
+    value: "6379"
+  - name: REDIS_KEY_PREFIX
+    value: 'eo:tracker:'
+  - name: REDIS_KEY_EXPIRY
+    value: "86400"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/completion-tracker@sha256:5d8c1c331f2f0544abee3eb8ce9e84ab1fcd1470b06a64f604f918ade6facabc
+  image: docker.io/davidandw190/completion-tracker@sha256:1def4b936d2bea47434ff4d98bf053ba97f4aeb2de9d1fc81e4302edb1bd05b5

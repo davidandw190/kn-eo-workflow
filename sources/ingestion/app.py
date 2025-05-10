@@ -467,21 +467,24 @@ def process_single_asset(minio_client, item, asset_id, request_id, config, redis
         raise
     
         
-def send_event(event, sink_url, retries=3, base_delay=1.0):
+def send_event(event, sink_url, retries=3, base_delay=0.5, max_delay=10.0):
     """Send a CloudEvent to the sink with improved reliability"""
     event_type = event['type']
     event_id = event['id']
+    
     logger.info(f"Sending event {event_type} (ID: {event_id}) to {sink_url}")
     headers, body = to_structured(event)
     headers['X-Request-ID'] = event_id
     
     for attempt in range(retries):
         try:
+            timeout = (min(5, 3 + attempt), min(15, 10 + attempt*2))
+            
             response = requests.post(
                 sink_url,
                 headers=headers,
                 data=body,
-                timeout=(5, 15)  # (connect timeout, read timeout)
+                timeout=timeout
             )
             
             if 200 <= response.status_code < 300:
@@ -489,13 +492,13 @@ def send_event(event, sink_url, retries=3, base_delay=1.0):
                 return True
             else:
                 logger.warning(f"Event delivery failed: status={response.status_code}, attempt={attempt+1}/{retries}")
-                
-                if 400 <= response.status_code < 500:
-                    logger.error(f"Not retrying client error: {response.status_code}")
+                if response.status_code == 400:
+                    logger.error(f"Bad request error: {response.text}")
                     return False
                     
                 if attempt < retries - 1:
-                    delay = base_delay * (2 ** attempt) * (0.5 + 0.5 * random.random())
+                    # Exponential backoff with jitter
+                    delay = min(base_delay * (2 ** attempt) * (0.75 + 0.5 * random.random()), max_delay)
                     logger.info(f"Retrying in {delay:.2f} seconds")
                     time.sleep(delay)
                 else:
@@ -504,7 +507,7 @@ def send_event(event, sink_url, retries=3, base_delay=1.0):
             error_type = type(e).__name__
             logger.error(f"Error sending event: [{error_type}] {str(e)}")
             if attempt < retries - 1:
-                delay = base_delay * (2 ** attempt) * (0.5 + 0.5 * random.random())
+                delay = min(base_delay * (2 ** attempt) * (0.75 + 0.5 * random.random()), max_delay)
                 logger.info(f"Retrying in {delay:.2f} seconds")
                 time.sleep(delay)
             else:
@@ -534,22 +537,9 @@ def send_error_event(error_msg, error_type, request_id, config):
         logger.error(f"Cannot send error event - no sink URL: {error_msg}")
 
 def handle_search_requested(event_data, config):
-    request_id = event_data.get('request_id', "unknown")
+    request_id = event_data.get('request_id', str(uuid.uuid4()))
     
     try:
-        # init Redis for deduplication
-        redis_client = None
-        try:
-            redis_client = initialize_redis_client(config)
-            
-            if is_event_processed(redis_client, "search_request", request_id, config):
-                logger.info(f"Request {request_id} already processed, skipping")
-                return True
-                
-            mark_event_processed(redis_client, "search_request", request_id, config)
-        except Exception as redis_error:
-            logger.warning(f"Redis connection failed, proceeding without deduplication: {str(redis_error)}")
-        
         logger.info(f"Processing search request: {request_id}")
         
         bbox = event_data.get('bbox')
@@ -559,6 +549,7 @@ def handle_search_requested(event_data, config):
         
         if not bbox or not time_range:
             logger.error("Missing required parameters (bbox, time_range)")
+            send_error_event("Missing required parameters", "ValidationError", request_id, config)
             return False
         
         minio_client = initialize_minio_client(config)
@@ -569,52 +560,119 @@ def handle_search_requested(event_data, config):
             modifier=planetary_computer.sign_inplace
         )
         
+        # Search for scenes
         items = search_scenes(stac_client, config, bbox, time_range, cloud_cover, max_items)
         
         if not items:
             logger.warning("No scenes found matching the search criteria")
-            return False
+            
+            # Send completion event even if no scenes found
+            sink_url = config.get('sink_url')
+            if sink_url:
+                completion_data = {
+                    "request_id": request_id,
+                    "scenes_processed": 0,
+                    "scenes_total": 0,
+                    "success": True,
+                    "reason": "No scenes matching criteria",
+                    "timestamp": int(time.time())
+                }
+                
+                completion_event = create_cloud_event(
+                    "eo.search.completed",
+                    completion_data,
+                    config['event_source']
+                )
+                
+                send_event(completion_event, sink_url)
+            
+            return True
         
         sink_url = config.get('sink_url')
         if not sink_url:
             logger.error("No K_SINK environment variable found. Cannot send events.")
             return False
         
-        success = True
+        scenes_processed = 0
+        scenes_total = len(items)
+        
+        # Process each scene sequentially to avoid overwhelming the system
         for item in items:
             try:
-                registration_event, processed_assets = process_scene(
-                    minio_client, 
-                    item, 
-                    request_id, 
-                    bbox, 
-                    config,
-                    redis_client
+                scene_id = item.id
+                collection_id = item.collection_id
+                acquisition_date = item.datetime.strftime('%Y-%m-%d') if item.datetime else None
+                cloud_cover = item.properties.get('eo:cloud_cover', 'N/A')
+                
+                logger.info(f"Processing scene: {scene_id} from {collection_id}, date: {acquisition_date}, cloud cover: {cloud_cover}%")
+                
+                band_assets = [f"B{i:02d}" for i in range(1, 13)] + ["B8A", "SCL"]
+                assets_to_ingest = [band for band in band_assets if band in item.assets]
+                
+                if not assets_to_ingest:
+                    logger.warning(f"No assets to ingest for scene {scene_id}")
+                    continue
+                
+                # Send registration event first
+                registration_data = {
+                    "request_id": request_id,
+                    "item_id": scene_id,
+                    "collection": collection_id,
+                    "assets": assets_to_ingest,
+                    "bbox": bbox,
+                    "acquisition_date": acquisition_date,
+                    "cloud_cover": cloud_cover
+                }
+                
+                registration_event = create_cloud_event(
+                    "eo.scene.assets.registered",
+                    registration_data,
+                    config['event_source']
                 )
                 
-                if registration_event and processed_assets:
-                    logger.info(f"Sending registration event for scene {item.id}")
-                    if not send_event(registration_event, sink_url):
-                        success = False
+                # Send and wait a bit to ensure the completion tracker has received it
+                if send_event(registration_event, sink_url):
+                    time.sleep(1)  # Small delay to ensure registration is processed
                     
-                    for asset_data in processed_assets:
-                        asset_event = create_cloud_event(
-                            "eo.asset.ingested",
-                            asset_data,
-                            config['event_source']
-                        )
-                        
-                        logger.info(f"Sending ingestion event for asset {asset_data['asset_id']}")
-                        if not send_event(asset_event, sink_url):
-                            success = False
+                    # Now process assets one by one
+                    for asset_id in assets_to_ingest:
+                        try:
+                            result = download_and_store_asset(
+                                minio_client,
+                                item, 
+                                asset_id, 
+                                request_id,
+                                config
+                            )
+                            
+                            if result:
+                                # Send the ingestion event for each asset
+                                ingestion_event = create_cloud_event(
+                                    "eo.asset.ingested",
+                                    result,
+                                    config['event_source']
+                                )
+                                
+                                logger.info(f"Sending ingestion event for asset {asset_id}, scene {scene_id}")
+                                send_event(ingestion_event, sink_url)
+                                # Small delay between asset events
+                                time.sleep(0.2)
+                        except Exception as e:
+                            logger.error(f"Error processing asset {asset_id} for scene {scene_id}: {str(e)}")
+                    
+                    scenes_processed += 1
+                else:
+                    logger.error(f"Failed to send registration event for scene {scene_id}")
+                
             except Exception as e:
                 logger.error(f"Error processing scene {item.id}: {str(e)}")
-                success = False
         
+        # Always send a completion event
         completion_data = {
             "request_id": request_id,
-            "scenes_processed": len(items),
-            "success": success,
+            "scenes_processed": scenes_processed,
+            "scenes_total": scenes_total,
+            "success": scenes_processed > 0,
             "timestamp": int(time.time())
         }
         
@@ -626,12 +684,121 @@ def handle_search_requested(event_data, config):
         
         send_event(completion_event, sink_url)
         
-        return success
+        return scenes_processed > 0
         
     except Exception as e:
         logger.exception(f"Error handling search request: {str(e)}")
+        
+        # Always send error event
+        error_data = {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "request_id": request_id,
+            "timestamp": int(time.time())
+        }
+        
+        error_event = create_cloud_event(
+            "eo.processing.error",
+            error_data,
+            config['event_source']
+        )
+        
+        sink_url = config.get('sink_url')
+        if sink_url:
+            send_event(error_event, sink_url)
+        
         return False
-       
+    
+def download_and_store_asset(minio_client, item, asset_id, request_id, config):
+    """Process a single asset with download and storage in a single function"""
+    try:
+        scene_id = item.id
+        collection_id = item.collection_id
+        
+        logger.info(f"Processing asset {asset_id} for item: {scene_id}, request: {request_id}")
+        
+        if asset_id not in item.assets:
+            logger.warning(f"Asset {asset_id} not found in item {scene_id}")
+            return None
+        
+        asset = item.assets[asset_id]
+        max_retries = config['max_retries']
+        base_delay = 2
+        
+        # Download the asset
+        for attempt in range(max_retries):
+            try:
+                asset_href = planetary_computer.sign(asset.href)
+                timeout = (config['connection_timeout'], config['connection_timeout'] * 5)
+                
+                with requests.get(
+                    asset_href, 
+                    stream=True, 
+                    timeout=timeout
+                ) as response:
+                    response.raise_for_status()
+                    
+                    data = b''
+                    for chunk in response.iter_content(chunk_size=8*1024*1024):
+                        if chunk:
+                            data += chunk
+                    
+                    metadata = {
+                        "item_id": scene_id,
+                        "collection": collection_id,
+                        "asset_id": asset_id,
+                        "content_type": asset.media_type,
+                        "original_href": asset.href,
+                        "timestamp": str(int(time.time())),
+                        "bbox": json.dumps(item.bbox),
+                        "datetime": item.datetime.isoformat() if item.datetime else None,
+                        "request_id": request_id
+                    }
+                    
+                    # Store the asset
+                    collection = collection_id
+                    object_name = f"{collection}/{scene_id}/{asset_id}"
+                    content_type = metadata.get("content_type", "application/octet-stream")
+                    
+                    minio_client.put_object(
+                        config['raw_bucket'],
+                        object_name,
+                        io.BytesIO(data),
+                        length=len(data),
+                        content_type=content_type,
+                        metadata=metadata
+                    )
+                    
+                    logger.info(f"Stored asset {asset_id} from item {scene_id} in bucket {config['raw_bucket']}")
+                    
+                    result = {
+                        "bucket": config['raw_bucket'],
+                        "object_name": object_name,
+                        "item_id": scene_id,
+                        "asset_id": asset_id,
+                        "collection": collection,
+                        "size": len(data),
+                        "content_type": content_type,
+                        "request_id": request_id
+                    }
+                    
+                    return result
+            except requests.exceptions.RequestException as e:
+                if "403" in str(e) and "Server failed to authenticate" in str(e):
+                    logger.warning(f"Authentication error for asset {asset_id}, refreshing token...")
+                    planetary_computer.SIGNED_HREFS.clear()
+                elif attempt == max_retries - 1:
+                    logger.error(f"Failed to download asset {asset_id} after {max_retries} attempts: {str(e)}")
+                    raise
+                    
+                delay = base_delay * (2 ** attempt)
+                logger.warning(f"Download attempt {attempt + 1} failed: {str(e)}. Retrying in {delay}s...")
+                time.sleep(delay)
+        
+    except Exception as e:
+        logger.error(f"Error processing asset {asset_id}: {str(e)}")
+        raise
+               
 app = Flask(__name__)
 
 @app.route('/health', methods=['GET'])
@@ -644,29 +811,37 @@ def handle_event():
     config = get_config()
     
     try:
-        try:
-            request_data = request.get_json(silent=True)
+        # Check for CloudEvent headers first
+        ce_type = request.headers.get('ce-type')
+        ce_source = request.headers.get('ce-source')
+        ce_id = request.headers.get('ce-id')
+        
+        if ce_type and ce_source and ce_id:
+            logger.info(f"Received CloudEvent via headers: {ce_type} from {ce_source} (ID: {ce_id})")
             
-            if isinstance(request_data, dict) and 'request_id' in request_data and 'bbox' in request_data:
-                logger.info(f"Received direct request from webhook, request_id: {request_data.get('request_id')}")
+            # Parse the request body as the event data
+            event_data = request.get_json(silent=True) or {}
+            
+            if ce_type == 'eo.search.requested':
+                logger.info(f"Processing search request event: {event_data.get('request_id', 'unknown')}")
                 
                 thread = threading.Thread(
                     target=handle_search_requested,
-                    args=(request_data, config)
+                    args=(event_data, config)
                 )
                 thread.daemon = True
                 thread.start()
                 
                 return Response(status=202)  # Accepted
                 
-        except Exception as json_err:
-            logger.warning(f"Failed to parse as direct JSON request: {str(json_err)}")
-        
+            return Response(status=202)  # We accept all CloudEvents
+            
+        # If no CE headers, try to parse as CloudEvent
         try:
             cloud_event = from_http(request.headers, request.get_data())
             event_type = cloud_event['type']
             
-            logger.info(f"Received CloudEvent: {event_type}")
+            logger.info(f"Received CloudEvent object: {event_type}")
             
             event_data = cloud_event.data
             if isinstance(event_data, str):
@@ -686,9 +861,30 @@ def handle_event():
                 thread.start()
                 
                 return Response(status=202)  # Accepted
+            
+            return Response(status=202)  # We accept all CloudEvents
+            
         except Exception as ce_error:
             logger.warning(f"Failed to parse as CloudEvent: {str(ce_error)}")
         
+        # Finally, try to handle as direct JSON
+        try:
+            request_data = request.get_json(silent=True)
+            
+            if isinstance(request_data, dict) and 'request_id' in request_data and 'bbox' in request_data:
+                logger.info(f"Received direct request from webhook, request_id: {request_data.get('request_id')}")
+                
+                thread = threading.Thread(
+                    target=handle_search_requested,
+                    args=(request_data, config)
+                )
+                thread.daemon = True
+                thread.start()
+                
+                return Response(status=202)  # Accepted
+        except Exception as json_err:
+            logger.warning(f"Failed to parse as direct JSON request: {str(json_err)}")
+            
         logger.warning(f"Unrecognized request format")
         return Response(status=400)  # Bad request
         

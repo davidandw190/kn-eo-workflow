@@ -2,9 +2,8 @@ from parliament import Context
 import os
 import time
 import logging
-import json
 import uuid
-import requests
+from cloudevents.http import CloudEvent, to_structured
 from datetime import datetime, timezone
 
 logging.basicConfig(
@@ -12,6 +11,16 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+def create_cloud_event(event_type, data, source):
+    return CloudEvent({
+        "specversion": "1.0",
+        "type": event_type,
+        "source": source,
+        "id": f"{event_type}-{int(time.time())}-{uuid.uuid4()}",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "datacontenttype": "application/json",
+    }, data)
 
 def main(context: Context):
     try:
@@ -43,7 +52,7 @@ def main(context: Context):
         
         request_id = str(uuid.uuid4())
         
-        request_data = {
+        search_data = {
             "bbox": bbox,
             "time_range": time_range,
             "cloud_cover": cloud_cover,
@@ -52,38 +61,25 @@ def main(context: Context):
             "timestamp": int(time.time())
         }
         
-        ingestion_url = "http://ingestion-service.eo-workflow.svc.cluster.local"
-        max_retries = 3
-        retry_delay = 1  # seconds
+        search_event = create_cloud_event(
+            "eo.search.requested",
+            search_data,
+            "eo-workflow/webhook"
+        )
         
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Sending request to ingestion service (attempt {attempt+1}/{max_retries})")
-                response = requests.post(
-                    ingestion_url, 
-                    json=request_data, 
-                    headers={"Content-Type": "application/json"},
-                    timeout=10
-                )
-                
-                if response.status_code >= 200 and response.status_code < 300:
-                    logger.info(f"Successfully sent request. Status: {response.status_code}")
-                    return {"status": "success", "message": "Search request submitted", "request_id": request_id}, 202
-                else:
-                    logger.warning(f"Request failed with status: {response.status_code}, Response: {response.text}")
-                    if attempt < max_retries - 1:
-                        logger.info(f"Retrying in {retry_delay} seconds...")
-                        time.sleep(retry_delay)
-                    else:
-                        return {"error": f"Failed to submit request: HTTP {response.status_code}"}, 500
-            except Exception as e:
-                logger.warning(f"Request attempt {attempt+1} failed: {str(e)}")
-                if attempt < max_retries - 1:
-                    logger.info(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                else:
-                    return {"error": f"Failed to submit request after {max_retries} attempts: {str(e)}"}, 500
-    
+        logger.info(f"Created search request event with ID: {request_id}")
+        sink_url = os.getenv("K_SINK", "http://broker-ingress.knative-eventing.svc.cluster.local/eo-workflow/eo-event-broker")
+        headers, body = to_structured(search_event)
+        
+        import requests
+        response = requests.post(sink_url, headers=headers, data=body)
+        if response.status_code >= 200 and response.status_code < 300:
+            logger.info(f"Successfully sent event to broker, status: {response.status_code}")
+        else:
+            logger.warning(f"Failed to send event to broker, status: {response.status_code}")
+        
+        return {"status": "success", "request_id": request_id}, 202
+        
     except Exception as e:
         logger.exception(f"Error in webhook handler: {str(e)}")
         return {"error": "Server error processing request"}, 500

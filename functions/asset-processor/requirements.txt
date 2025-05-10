@@ -1,4 +1,7 @@
 parliament-functions==0.1.0
 cloudevents==1.11.0
 functions-framework==3.*
+pystac-client==0.8.6
+planetary-computer==1.0.0
+minio==7.2.15
 requests==2.32.0

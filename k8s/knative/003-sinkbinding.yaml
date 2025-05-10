@@ -1,16 +1,13 @@
 apiVersion: sources.knative.dev/v1
 kind: SinkBinding
 metadata:
-  name: eo-webhook-sink
+  name: webhook-sink
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: eo-webhook-sink
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   subject:
     apiVersion: serving.knative.dev/v1
     kind: Service
-    name: eo-webhook
+    name: webhook
   sink:
     ref:
       apiVersion: eventing.knative.dev/v1

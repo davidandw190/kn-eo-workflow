@@ -35,8 +35,18 @@ def get_config():
         'shadow_dilate_size': int(os.getenv('SHADOW_DILATE_SIZE', '3')),
     }
 
+def create_cloud_event(event_type, data, source):
+    """Create a CloudEvent with standard attributes"""
+    return CloudEvent({
+        "specversion": "1.0",
+        "type": event_type,
+        "source": source,
+        "id": f"{event_type}-{int(time.time())}-{uuid.uuid4()}",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "datacontenttype": "application/json",
+    }, data)
+
 def initialize_minio_client(config):
-    """Initialize MinIO client with retries"""
     for attempt in range(config['max_retries']):
         try:
             logger.info(f"Initializing MinIO client with endpoint: {config['minio_endpoint']}")
@@ -46,7 +56,6 @@ def initialize_minio_client(config):
                 secret_key=config['minio_secret_key'],
                 secure=config['secure_connection']
             )
-            # Test connection
             client.list_buckets()
             logger.info("Successfully connected to MinIO")
             return client
@@ -58,7 +67,6 @@ def initialize_minio_client(config):
             time.sleep(config['connection_timeout'])
 
 def ensure_bucket(minio_client, bucket_name, config):
-    """Ensure bucket exists with retries"""
     for attempt in range(config['max_retries']):
         try:
             if not minio_client.bucket_exists(bucket_name):
@@ -74,7 +82,6 @@ def ensure_bucket(minio_client, bucket_name, config):
             time.sleep(config['connection_timeout'])
 
 def download_asset(minio_client, bucket, object_name, config):
-    """Download asset from MinIO with retries"""
     for attempt in range(config['max_retries']):
         try:
             logger.info(f"Downloading asset from bucket: {bucket}, object: {object_name}")
@@ -90,7 +97,6 @@ def download_asset(minio_client, bucket, object_name, config):
             time.sleep(config['connection_timeout'])
 
 def upload_fmask(minio_client, fmask_data, bucket, object_name, metadata, config):
-    """Upload FMask to MinIO with retries"""
     for attempt in range(config['max_retries']):
         try:
             ensure_bucket(minio_client, bucket, config)
@@ -113,7 +119,6 @@ def upload_fmask(minio_client, fmask_data, bucket, object_name, metadata, config
             time.sleep(config['connection_timeout'])
 
 def load_asset_as_xarray(asset_data, asset_id):
-    """Load asset data as xarray DataArray"""
     try:
         with tempfile.NamedTemporaryFile(suffix='.tif') as tmp:
             tmp.write(asset_data)
@@ -132,34 +137,19 @@ def load_asset_as_xarray(asset_data, asset_id):
         logger.error(f"Error loading asset {asset_id} as xarray: {str(e)}")
         raise
 
-def create_cloud_event(event_type, data, source):
-    """Create a CloudEvent object"""
-    return CloudEvent({
-        "specversion": "1.0",
-        "type": event_type,
-        "source": source,
-        "id": f"{event_type}-{int(time.time())}-{uuid.uuid4()}",
-        "time": datetime.now(timezone.utc).isoformat(),
-        "datacontenttype": "application/json",
-    }, data)
-
 def compute_ndvi(red, nir):
-    """Compute Normalized Difference Vegetation Index"""
+    """Normalized Difference Vegetation Index"""
     return (nir - red) / (nir + red + 1e-10)
 
 def compute_ndwi(green, nir):
-    """Compute Normalized Difference Water Index"""
+    """Normalized Difference Water Index"""
     return (green - nir) / (green + nir + 1e-10)
 
 def compute_mndwi(green, swir):
-    """Compute Modified Normalized Difference Water Index"""
+    """Modified Normalized Difference Water Index"""
     return (green - swir) / (green + swir + 1e-10)
 
 def compute_cloud_shadow_mask(ds, config):
-    """
-    Generate cloud and shadow mask from a dataset of bands
-    Adapted from the Sentinel2Analyzer.compute_enhanced_land_cover method
-    """
     logger.info("Computing cloud and shadow mask")
 
     blue = ds['B02'].values
@@ -259,7 +249,6 @@ def compute_cloud_shadow_mask(ds, config):
     return fmask
 
 def save_fmask_to_tiff(fmask, reference_da):
-    """Save FMask as GeoTIFF using reference DataArray for geospatial info"""
     try:
         mask_da = xr.DataArray(
             fmask,
@@ -316,7 +305,14 @@ def main(context: Context):
                 "request_id": request_id,
                 "item_id": item_id
             }
-            return create_cloud_event("eo.processing.error", error_data, config['event_source'])
+            
+            error_event = create_cloud_event(
+                "eo.processing.error",
+                error_data, 
+                config['event_source']
+            )
+            
+            return error_event
         
         minio_client = initialize_minio_client(config)
         
@@ -371,6 +367,7 @@ def main(context: Context):
         
     except Exception as e:
         logger.exception(f"Error in FMask function: {str(e)}")
+        
         error_data = {
             "error": str(e),
             "error_type": type(e).__name__,

@@ -26,11 +26,11 @@ spec:
         - name: EVENT_SOURCE
           value: "eo-workflow/ingestion"
         - name: MAX_RETRIES
-          value: "3"
+          value: "5"
         - name: MAX_ITEMS
           value: "1"
         - name: CONNECTION_TIMEOUT
-          value: "5"
+          value: "10"
         - name: MAX_WORKERS
           value: "4"
         - name: REDIS_HOST

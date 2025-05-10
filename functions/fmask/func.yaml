@@ -12,6 +12,6 @@ build:
     value: "1"
 deploy:
   namespace: eo-workflow
-  image: docker.io/davidandw190/fmask@sha256:f3b487e7215e11f1eea20e01afb55c6fb51a8bb9773c4c4ba47cc3f54d7bb674
+  image: docker.io/davidandw190/fmask@sha256:2ede4926504e3cf2f0627d43dd0954f7ab48eed0876c566028bfedc7737de566
   annotations:
     serving.knative.dev/preserveCloudEvents: "true"

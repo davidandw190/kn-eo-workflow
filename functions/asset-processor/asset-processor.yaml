@@ -1,0 +1,42 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: asset-processor
+  namespace: eo-workflow
+  labels:
+    app.kubernetes.io/name: asset-processor
+    app.kubernetes.io/part-of: eo-processing-system
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "5"
+        serving.knative.dev/preserveCloudEvents: "true"
+    spec:
+      containers:
+      - image: docker.io/davidandw190/eo-asset-processor:latest
+        env:
+        - name: EVENT_SOURCE
+          value: "eo-workflow/asset-processor"
+        - name: MINIO_ENDPOINT
+          value: "minio.eo-workflow.svc.cluster.local:9000"
+        - name: MINIO_ACCESS_KEY
+          value: "minioadmin"
+        - name: MINIO_SECRET_KEY
+          value: "minioadmin"
+        - name: RAW_BUCKET
+          value: "raw-assets"
+        - name: MAX_RETRIES
+          value: "3"
+        - name: CONNECTION_TIMEOUT
+          value: "5"
+        - name: MINIO_SECURE
+          value: "false"
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"

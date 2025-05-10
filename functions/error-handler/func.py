@@ -42,8 +42,7 @@ def main(context: Context):
             request_id = event_data.get("request_id", "unknown")
             
             logger.error(f"Error in request {request_id}: [{error_type}] {error_msg}")
-            
-            # Additional error information
+
             if "item_id" in event_data:
                 logger.error(f"Related to item: {event_data['item_id']}")
             if "asset_id" in event_data:
@@ -54,7 +53,6 @@ def main(context: Context):
         else:
             logger.error(f"Error event data: {event_data}")
         
-        # Return acknowledgment of the error
         return {
             "status": "error_processed",
             "timestamp": int(time.time())

@@ -1,7 +1,7 @@
 apiVersion: eventing.knative.dev/v1
 kind: Trigger
 metadata:
-  name: search-request-trigger
+  name: search-trigger
   namespace: eo-workflow
 spec:
   broker: eo-event-broker
@@ -9,30 +9,64 @@ spec:
     attributes:
       type: eo.search.requested
   subscriber:
-    uri: http://ingestion-source-deployment.eo-workflow.svc.cluster.local:8080
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: search
 ---
 apiVersion: eventing.knative.dev/v1
 kind: Trigger
 metadata:
-  name: debug-all-events-trigger
+  name: asset-scheduler-trigger
   namespace: eo-workflow
 spec:
   broker: eo-event-broker
-  # No filter means it receives all events
+  filter:
+    attributes:
+      type: eo.scene.assets.registered
   subscriber:
     ref:
       apiVersion: serving.knative.dev/v1
       kind: Service
-      name: debug-events
+      name: asset-scheduler
+---
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: asset-processor-trigger
+  namespace: eo-workflow
+spec:
+  broker: eo-event-broker
+  filter:
+    attributes:
+      type: eo.asset.process
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: asset-processor
+---
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: scene-discovery-trigger
+  namespace: eo-workflow
+spec:
+  broker: eo-event-broker
+  filter:
+    attributes:
+      type: eo.scene.discovered
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: asset-processor
 ---
 apiVersion: eventing.knative.dev/v1
 kind: Trigger
 metadata:
   name: cog-transformer-trigger
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: cog-transformer-trigger
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   broker: eo-event-broker
   filter:
@@ -49,9 +83,6 @@ kind: Trigger
 metadata:
   name: completion-tracker-register-trigger
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: completion-tracker-register-trigger
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   broker: eo-event-broker
   filter:
@@ -68,9 +99,6 @@ kind: Trigger
 metadata:
   name: completion-tracker-asset-trigger
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: completion-tracker-asset-trigger
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   broker: eo-event-broker
   filter:
@@ -87,9 +115,6 @@ kind: Trigger
 metadata:
   name: fmask-trigger
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: fmask-trigger
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   broker: eo-event-broker
   filter:
@@ -106,9 +131,6 @@ kind: Trigger
 metadata:
   name: fmask-cog-trigger
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: fmask-cog-trigger
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   broker: eo-event-broker
   filter:
@@ -125,9 +147,6 @@ kind: Trigger
 metadata:
   name: error-handler-trigger
   namespace: eo-workflow
-  labels:
-    app.kubernetes.io/name: error-handler-trigger
-    app.kubernetes.io/part-of: eo-processing-system
 spec:
   broker: eo-event-broker
   filter:
@@ -138,3 +157,29 @@ spec:
       apiVersion: serving.knative.dev/v1
       kind: Service
       name: error-handler
+---
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: debug-all-events-trigger
+  namespace: eo-workflow
+spec:
+  broker: eo-event-broker
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: debug-events
+---
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: monitor-all-events
+  namespace: eo-workflow
+spec:
+  broker: eo-event-broker
+  subscriber:
+    ref:
+      apiVersion: v1
+      kind: Service
+      name: event-monitor

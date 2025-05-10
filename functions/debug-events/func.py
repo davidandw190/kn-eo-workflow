@@ -15,9 +15,7 @@ logger = logging.getLogger(__name__)
 def main(context: Context):
     logger.info("Debug-Events function activated")
     
-    # Log the raw event data
     if hasattr(context, 'cloud_event'):
-        # Extract key attributes directly rather than using .items()
         event_type = context.cloud_event["type"]
         event_source = context.cloud_event["source"]
         event_id = context.cloud_event["id"]
@@ -28,12 +26,10 @@ def main(context: Context):
         logger.info(f"  Source: {event_source}")
         logger.info(f"  ID: {event_id}")
         
-        # List common CloudEvent attributes we might want to log
         for attr in ["time", "specversion", "subject", "datacontenttype"]:
             if attr in context.cloud_event:
                 logger.info(f"  {attr}: {context.cloud_event[attr]}")
         
-        # Log the data payload
         event_data = context.cloud_event.data
         if isinstance(event_data, str):
             try:
@@ -41,12 +37,10 @@ def main(context: Context):
             except:
                 pass
         
-        # Format for readability
         data_str = json.dumps(event_data, indent=2)
         logger.info(f"  Data: {data_str}")
         logger.info(f"============================================")
         
-        # Return success
         return {
             "status": "event_received",
             "event_type": event_type,
@@ -55,7 +49,6 @@ def main(context: Context):
         }, 200
     else:
         logger.warning("No CloudEvent in context")
-        # Log all request data to help debug
         if hasattr(context, 'request'):
             logger.info(f"Request method: {context.request.method}")
             logger.info(f"Request headers: {dict(context.request.headers)}")
